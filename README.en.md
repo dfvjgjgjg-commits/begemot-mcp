@@ -61,6 +61,14 @@ From cmd:
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/installer/install_begemot_opencode.ps1 | iex"
 ```
 
+If PowerShell complains about `﻿#` (a BOM slipped into the start of the file — happens with a stale CDN cache), use the file-based variant, it always works:
+
+```powershell
+$u = "https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/installer/install_begemot_opencode.ps1"
+$p = Join-Path $env:TEMP "begemot_install.ps1"
+irm $u -OutFile $p; & $p
+```
+
 From macOS / Linux:
 
 ```bash

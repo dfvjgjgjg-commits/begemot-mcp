@@ -26,6 +26,14 @@ irm https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/install
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/installer/install_begemot_opencode.ps1 | iex"
 ```
 
+Если PowerShell ругается на `﻿#` (в начало файла попал BOM — бывает из-за старого кеша CDN), используй вариант через файл — он работает всегда:
+
+```powershell
+$u = "https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/installer/install_begemot_opencode.ps1"
+$p = Join-Path $env:TEMP "begemot_install.ps1"
+irm $u -OutFile $p; & $p
+```
+
 ### macOS / Linux — bash
 
 ```bash
