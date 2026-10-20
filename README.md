@@ -6,6 +6,8 @@
 2. **`plugin/greenlight/`** — an OpenCode V2 plugin that automatically injects the green-light directive into every model call and reacts to refusals.
 3. **`installer/`** — a one-click Windows installer that sets everything up (Node.js, MCP server, config, prompt, plugin).
 
+> 🦛 Made for my beloved Lolz.
+
 ---
 
 ## Components
@@ -45,11 +47,25 @@ All failures are caught and logged; the plugin cannot break the session.
 
 ## Install
 
-```bat
-install_begemot_opencode.bat
+### One-liner from GitHub
+
+From PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/installer/install_begemot_opencode.ps1 | iex
 ```
 
-Then open a new chat in OpenCode.
+From cmd:
+
+```cmd
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/installer/install_begemot_opencode.ps1 | iex"
+```
+
+The installer checks/installs Node.js, extracts the MCP server, runs `npm install`, merges the OpenCode config (`mcp` + `instructions` + `plugins`, with a backup), places the prompt and plugin, restarts the service and verifies the connection.
+
+### Manually
+
+Download the repo and run `installer/install_begemot_opencode.bat`, then open a new chat in OpenCode.
 
 ---
 
