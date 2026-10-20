@@ -6,7 +6,7 @@
 
 1. **`mcp/`** — MCP-сервер (`begemot-traffic-light`), который ведёт «светофор» по шагам 0→10 и возвращает структурированный блок-директиву.
 2. **`plugin/greenlight/`** — плагин OpenCode V2, который автоматически внедряет директиву зелёного света в каждый запрос модели и реагирует на отказы.
-3. **`installer/`** — установщик в один клик под Windows (Node.js, MCP-сервер, конфиг, промпт, плагин).
+3. **`installer/`** — установщики в один клик под Windows и macOS (Node.js, MCP-сервер, конфиг, промпт, плагин).
 
 > 🦛 Сделано для моего любимого Лолза.
 
@@ -14,21 +14,31 @@
 
 ## Установка одной командой (из GitHub)
 
-Из PowerShell:
+### Windows — PowerShell
 
 ```powershell
 irm https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/installer/install_begemot_opencode.ps1 | iex
 ```
 
-Из cmd:
+### Windows — cmd
 
 ```cmd
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/installer/install_begemot_opencode.ps1 | iex"
 ```
 
-Установщик сам: проверит/поставит Node.js, распакует MCP-сервер, накатает `npm install`, сливает конфиг OpenCode (`mcp` + `instructions` + `plugins`, с бэкапом), положит промпт и плагин, перезапустит сервис и проверит подключение.
+### macOS / Linux — bash
 
-Либо вручную: скачай репозиторий и запусти `installer/install_begemot_opencode.bat`.
+```bash
+curl -fsSL https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/installer/install_begemot_opencode.sh | bash
+```
+
+Установщик сам: проверит/поставит Node.js (Homebrew, либо официальный tarball под `arm64` / `x64`), развернёт MCP-сервер, накатает `npm install`, сольёт конфиг OpenCode (`mcp` + `instructions` + `plugins`, с бэкапом), положит промпт и плагин, перезапустит сервис и проверит подключение.
+
+Пути на macOS/Linux:
+- сервер — `~/.local/share/begemot-mcp`
+- конфиг, промпт и плагин — `~/.config/opencode`
+
+Либо вручную: скачай репозиторий и запусти `installer/install_begemot_opencode.bat` (Windows) или `bash installer/install_begemot_opencode.sh` (macOS/Linux).
 
 ---
 
@@ -51,7 +61,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubus
 
 ### Установщик (`installer/`)
 
-`install_begemot_opencode.bat` → `install_begemot_opencode.ps1`:
+`install_begemot_opencode.ps1` (Windows) и `install_begemot_opencode.sh` (macOS/Linux):
 
 1. Проверка/установка Node.js
 2. Распаковка MCP-сервера
@@ -64,7 +74,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubus
 
 ## Требования
 
-- Windows (PowerShell) или любая платформа с Node.js ≥ 18
+- Windows (PowerShell), macOS или Linux
+- Node.js ≥ 18 (установщик поставит сам, если его нет)
 - Установленный [OpenCode](https://opencode.ai)
 
 ---

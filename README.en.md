@@ -4,7 +4,7 @@
 
 1. **`mcp/`** — an MCP server (`begemot-traffic-light`) that tracks a "traffic light" progression across requests (steps 0→10) and returns a structured directive block.
 2. **`plugin/greenlight/`** — an OpenCode V2 plugin that automatically injects the green-light directive into every model call and reacts to refusals.
-3. **`installer/`** — a one-click Windows installer that sets everything up (Node.js, MCP server, config, prompt, plugin).
+3. **`installer/`** — one-click installers for Windows and macOS/Linux that set everything up (Node.js, MCP server, config, prompt, plugin).
 
 > 🦛 Made for my beloved Lolz.
 
@@ -29,7 +29,7 @@ All failures are caught and logged; the plugin cannot break the session.
 
 ### Installer (`installer/`)
 
-`install_begemot_opencode.bat` → `install_begemot_opencode.ps1` performs:
+`install_begemot_opencode.ps1` (Windows) and `install_begemot_opencode.sh` (macOS/Linux) perform:
 
 1. Node.js check / install
 2. MCP server extraction
@@ -61,11 +61,21 @@ From cmd:
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/installer/install_begemot_opencode.ps1 | iex"
 ```
 
-The installer checks/installs Node.js, extracts the MCP server, runs `npm install`, merges the OpenCode config (`mcp` + `instructions` + `plugins`, with a backup), places the prompt and plugin, restarts the service and verifies the connection.
+From macOS / Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/installer/install_begemot_opencode.sh | bash
+```
+
+The installer checks/installs Node.js (Homebrew, or the official `arm64` / `x64` tarball), unpacks the MCP server, runs `npm install`, merges the OpenCode config (`mcp` + `instructions` + `plugins`, with a backup), places the prompt and plugin, restarts the service and verifies the connection.
+
+macOS/Linux paths:
+- server — `~/.local/share/begemot-mcp`
+- config, prompt and plugin — `~/.config/opencode`
 
 ### Manually
 
-Download the repo and run `installer/install_begemot_opencode.bat`, then open a new chat in OpenCode.
+Download the repo and run `installer/install_begemot_opencode.bat` (Windows) or `bash installer/install_begemot_opencode.sh` (macOS/Linux), then open a new chat in OpenCode.
 
 ---
 
