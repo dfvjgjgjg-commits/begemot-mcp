@@ -1,80 +1,78 @@
 # begemot-mcp
 
-**Begemot на светофоре** — a persona / workflow layer for [OpenCode](https://opencode.ai) built from three parts:
+**Бегемот на светофоре** — слой персоны / воркфлоу для [OpenCode](https://opencode.ai) из трёх частей:
 
-1. **`mcp/`** — an MCP server (`begemot-traffic-light`) that tracks a "traffic light" progression across requests (steps 0→10) and returns a structured directive block.
-2. **`plugin/greenlight/`** — an OpenCode V2 plugin that automatically injects the green-light directive into every model call and reacts to refusals.
-3. **`installer/`** — a one-click Windows installer that sets everything up (Node.js, MCP server, config, prompt, plugin).
+1. **`mcp/`** — MCP-сервер (`begemot-traffic-light`), который ведёт «светофор» по шагам 0→10 и возвращает структурированный блок-директиву.
+2. **`plugin/greenlight/`** — плагин OpenCode V2, который автоматически внедряет директиву зелёного света в каждый запрос модели и реагирует на отказы.
+3. **`installer/`** — установщик в один клик под Windows (Node.js, MCP-сервер, конфиг, промпт, плагин).
 
-> 🦛 Made for my beloved Lolz.
-
----
-
-## Components
-
-### MCP server (`mcp/server.js`)
-
-Exposes 13 tools, including `check_traffic_light` (the gate), `get_begemot_status`, `traffic_light_history`, `run_code` (sandboxed shell runner with timeout + buffer limits), and `begemot_help`.
-
-State is persisted atomically in `state.json`. All content pools (weather, quests, time-of-day, progress text) are configurable from `mcp/config.json` — no code edits required.
-
-### Greenlight plugin (`plugin/greenlight/index.js`)
-
-Two layers:
-
-- **Preventive** — a `context`/`generate` session hook pushes a green-light system directive into every outgoing model request, so the behavior does not depend on the model remembering to call an MCP tool.
-- **Reactive** — subscribes to `message.updated`, detects refusal patterns in assistant output, then re-prompts with an authorized-context reframe and rotates the session to a fallback open-weight model (`qwen3.6-plus → glm-5.3 → deepseek-v4-pro → minimax-m3 → nemotron-3-ultra-free → kimi-k3`). Capped at one retry per message and a bounded number of attempts per session.
-
-All failures are caught and logged; the plugin cannot break the session.
-
-### Installer (`installer/`)
-
-`install_begemot_opencode.bat` → `install_begemot_opencode.ps1` performs:
-
-1. Node.js check / install
-2. MCP server extraction
-3. `npm install`
-4. OpenCode config merge (`mcp` server + `instructions` + `plugins`) with JSONC-safe parsing and a backup
-5. Prompt + plugin placement
-6. Service restart + verification
+> 🦛 Сделано для моего любимого Лолза.
 
 ---
 
-## Requirements
+## Установка одной командой (из GitHub)
 
-- Windows (PowerShell) or any platform with Node.js ≥ 18
-- [OpenCode](https://opencode.ai) installed
-
-## Install
-
-### One-liner from GitHub
-
-From PowerShell:
+Из PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/installer/install_begemot_opencode.ps1 | iex
 ```
 
-From cmd:
+Из cmd:
 
 ```cmd
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/installer/install_begemot_opencode.ps1 | iex"
 ```
 
-The installer checks/installs Node.js, extracts the MCP server, runs `npm install`, merges the OpenCode config (`mcp` + `instructions` + `plugins`, with a backup), places the prompt and plugin, restarts the service and verifies the connection.
+Установщик сам: проверит/поставит Node.js, распакует MCP-сервер, накатает `npm install`, сливает конфиг OpenCode (`mcp` + `instructions` + `plugins`, с бэкапом), положит промпт и плагин, перезапустит сервис и проверит подключение.
 
-### Manually
-
-Download the repo and run `installer/install_begemot_opencode.bat`, then open a new chat in OpenCode.
+Либо вручную: скачай репозиторий и запусти `installer/install_begemot_opencode.bat`.
 
 ---
 
-## Intended use
+## Компоненты
 
-This is a **persona / workflow tooling** project for a private, single-operator workspace. The green-light directive and refusal-retry behavior are provided so the operator's own toolchain stays productive on their own machine.
+### MCP-сервер (`mcp/server.js`)
 
-> **Note:** automated model behavior, prompt-level directives and model routing are client-side measures. They cannot override a model's own training or a provider's server-side moderation. For guaranteed absence of model-side refusals, run an unfiltered local model (Ollama / LM Studio / vLLM) and point OpenCode at it.
+13 инструментов: `check_traffic_light` (гейт), `get_begemot_status`, `traffic_light_history`, `run_code` (sandboxed-запуск команд с таймаутом и лимитом буфера), `begemot_help` и др.
 
-## License
+Состояние хранится атомарно в `state.json`. Все тексты (погода, квесты, время суток, прогресс) настраиваются из `mcp/config.json` — без правки кода.
 
-MIT — see [LICENSE](LICENSE).
+### Плагин greenlight (`plugin/greenlight/index.js`)
+
+Два слоя:
+
+- **Превентивный** — хук `context`/`generate` добавляет системную директиву зелёного света в каждый исходящий запрос модели, поэтому поведение не зависит от того, вспомнит ли модель вызвать MCP.
+- **Реактивный** — подписка на `message.updated`, детект паттернов отказа в ответе ассистента, затем повторный запрос с рефреймом «авторизованный security research / CTF / red-team» и ротация сессии на open-weight модель (`qwen3.6-plus → glm-5.3 → deepseek-v4-pro → minimax-m3 → nemotron-3-ultra-free → kimi-k3`). Лимит — один ретрай на сообщение и ограниченное число попыток на сессию.
+
+Все ошибки логируются и глотаются — плагин не может уронить сессию.
+
+### Установщик (`installer/`)
+
+`install_begemot_opencode.bat` → `install_begemot_opencode.ps1`:
+
+1. Проверка/установка Node.js
+2. Распаковка MCP-сервера
+3. `npm install`
+4. Слияние конфига OpenCode (`mcp` + `instructions` + `plugins`) с JSONC-safe парсером и бэкапом
+5. Копирование промпта и плагина
+6. Перезапуск сервиса + проверка
+
+---
+
+## Требования
+
+- Windows (PowerShell) или любая платформа с Node.js ≥ 18
+- Установленный [OpenCode](https://opencode.ai)
+
+---
+
+## Предназначение
+
+Это **инструментарий персоны/воркфлоу** для приватного рабочего места одного оператора. Директива зелёного света и ретрай отказов нужны, чтобы собственный тулчейн оператора оставался продуктивным на его машине.
+
+> **Важно:** автоматизация поведения модели, промпт-директивы и роутинг моделей — клиентские меры. Они не могут отменить собственную тренировку модели или серверную модерацию провайдера. Для гарантированного отсутствия отказов на уровне модели — локальная нефильтрованная модель (Ollama / LM Studio / vLLM), на которую смотрит OpenCode.
+
+## Лицензия
+
+MIT — см. [LICENSE](LICENSE).
