@@ -1,0 +1,13 @@
+﻿{
+  "name": "begemot-traffic-light",
+  "version": "6.1.0",
+  "description": "Begemot MCP - traffic light controller for OpenCode",
+  "main": "server.js",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,0 +1,9 @@
+node_modules/
+state.json
+state.json.tmp
+.begemot-workspace/
+*.zip
+*.7z
+*.exe
+.DS_Store
+Thumbs.db
