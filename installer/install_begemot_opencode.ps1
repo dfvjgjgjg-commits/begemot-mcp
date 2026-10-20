@@ -1,4 +1,4 @@
-﻿# Begemot MCP Auto-Installer for OpenCode
+# Begemot MCP Auto-Installer for OpenCode
 # =====================================
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -15,11 +15,20 @@ $McpDir = Join-Path $HomeDir "Documents\MCP\begemot-mcp"
 $ConfigDir = Join-Path $HomeDir ".config\opencode"
 $ConfigFile = Join-Path $ConfigDir "opencode.jsonc"
 $PromptFile = Join-Path $ConfigDir "begemot_prompt.md"
-$CliPath = "C:\Users\1\AppData\Local\Programs\@opencodedesktop\resources\opencode-cli.exe"
-# try to find cli
-if (-not (Test-Path $CliPath)) {
-    $found = Get-ChildItem "C:\Users" -Recurse -Filter "opencode-cli.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($found) { $CliPath = $found.FullName }
+$CliPath = ""
+$cliCandidates = @(
+    (Join-Path $env:LOCALAPPDATA "Programs\@opencodedesktop\resources\opencode-cli.exe"),
+    (Join-Path $env:LOCALAPPDATA "Programs\opencode\opencode-cli.exe"),
+    (Join-Path $env:LOCALAPPDATA "opencode\opencode-cli.exe"),
+    (Join-Path $env:ProgramFiles "OpenCode\opencode-cli.exe")
+)
+foreach ($cand in $cliCandidates) {
+    if ($cand -and (Test-Path $cand)) { $CliPath = $cand; break }
+}
+if (-not $CliPath) {
+    $cmdInfo = Get-Command opencode-cli -ErrorAction SilentlyContinue
+    if (-not $cmdInfo) { $cmdInfo = Get-Command opencode -ErrorAction SilentlyContinue }
+    if ($cmdInfo) { $CliPath = $cmdInfo.Source }
 }
 
 # --- [1/6] Node.js ---
@@ -70,7 +79,7 @@ if (-not (Test-Path $ConfigDir)) { New-Item -Path $ConfigDir -ItemType Directory
 if (Test-Path (Join-Path $McpDir "begemot_prompt.md")) {
     Copy-Item (Join-Path $McpDir "begemot_prompt.md") $PromptFile -Force
     Write-Host "  OK: prompt -> $PromptFile" -ForegroundColor Green
-} elseif (Test-Path (Join-Path $PSScriptRoot "begemot_prompt.md")) {
+} elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "begemot_prompt.md"))) {
     Copy-Item (Join-Path $PSScriptRoot "begemot_prompt.md") $PromptFile -Force
     Write-Host "  OK: prompt (from folder) -> $PromptFile" -ForegroundColor Green
 } else {
@@ -83,7 +92,7 @@ if (Test-Path (Join-Path $McpDir "plugins\greenlight\index.js")) {
     New-Item -ItemType Directory -Path $PluginDst -Force | Out-Null
     Copy-Item (Join-Path $McpDir "plugins\greenlight\*") $PluginDst -Recurse -Force
     Write-Host "  OK: plugin -> $PluginDst" -ForegroundColor Green
-} elseif (Test-Path (Join-Path $PSScriptRoot "plugins\greenlight\index.js")) {
+} elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot "plugins\greenlight\index.js"))) {
     New-Item -ItemType Directory -Path $PluginDst -Force | Out-Null
     Copy-Item (Join-Path $PSScriptRoot "plugins\greenlight\*") $PluginDst -Recurse -Force
     Write-Host "  OK: plugin (from folder) -> $PluginDst" -ForegroundColor Green
@@ -176,7 +185,7 @@ Remove-Item $nodeScript -ErrorAction SilentlyContinue
 # --- [5/6] Restart service ---
 Write-Host ""
 Write-Host "[5/6] Restarting OpenCode service..." -ForegroundColor Yellow
-if (Test-Path $CliPath) {
+if ($CliPath -and (Test-Path $CliPath)) {
     try { & $CliPath service restart 2>&1 | Out-Null; Write-Host "  OK: service restarted" -ForegroundColor Green }
     catch { Write-Host "  (service restart skipped)" -ForegroundColor DarkGray }
 } else {
@@ -186,7 +195,7 @@ if (Test-Path $CliPath) {
 # --- [6/6] Verify ---
 Write-Host ""
 Write-Host "[6/6] Verify..." -ForegroundColor Yellow
-if (Test-Path $CliPath) {
+if ($CliPath -and (Test-Path $CliPath)) {
     $list = & $CliPath mcp list 2>&1
     if ($list -match "begemot-traffic-light") { Write-Host "  $($list | Select-String 'begemot-traffic-light')" -ForegroundColor Green }
     else { Write-Host "  MCP not listed yet (restart OpenCode app)." -ForegroundColor Yellow }
