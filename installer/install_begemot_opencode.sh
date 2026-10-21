@@ -26,6 +26,7 @@ GREEN='\033[32m'; YELLOW='\033[33m'; RED='\033[31m'; CYAN='\033[36m'; DIM='\033[
 
 ok()   { printf "${GREEN}  OK: %s${NC}\n" "$1"; }
 warn() { printf "${YELLOW}  WARN: %s${NC}\n" "$1"; }
+err()  { printf "${RED}  ERROR: %s${NC}\n" "$1" >&2; }
 die()  { printf "${RED}  ERROR: %s${NC}\n" "$1" >&2; exit 1; }
 step() { printf "\n${YELLOW}%s${NC}\n" "$1"; }
 
@@ -40,7 +41,7 @@ trap 'rm -rf "$TMP_BEGEMOT"' EXIT
 # ------------------------------------------------------------
 # [1/7] Node.js
 # ------------------------------------------------------------
-step "[1/7] Node.js..."
+step "[1/8] Node.js..."
 if ! command -v node >/dev/null 2>&1; then
     warn "Node.js not found"
     if command -v brew >/dev/null 2>&1; then
@@ -79,7 +80,7 @@ esac
 # ------------------------------------------------------------
 # [2/7] Fetch the current source from GitHub (no embedded payload)
 # ------------------------------------------------------------
-step "[2/7] Fetching $REPO_OWNER/$REPO_NAME @ $BRANCH..."
+step "[2/8] Fetching $REPO_OWNER/$REPO_NAME @ $BRANCH..."
 SRC_DIR=""
 
 fetch_ok() {
@@ -129,7 +130,7 @@ fi
 # ------------------------------------------------------------
 # [3/7] Deploy files
 # ------------------------------------------------------------
-step "[3/7] Deploying to $MCP_DIR..."
+step "[3/8] Deploying to $MCP_DIR..."
 mkdir -p "$MCP_DIR/plugins/greenlight" "$CONFIG_DIR" "$PLUGIN_DIR"
 
 if [ -d "$SRC_DIR/mcp" ]; then
@@ -153,6 +154,20 @@ fi
 [ -f "$MCP_DIR/server-http.mjs" ] || warn "server-http.mjs missing - local HTTP endpoint will not start"
 ok "files deployed (core.mjs, server.js, config.json, plugin, prompt)"
 
+# the merge module and the doctor travel with the install: both installers
+# share the exact same logic, and the doctor is what proves the install works
+mkdir -p "$MCP_DIR/installer"
+for f in merge-opencode-config.mjs doctor.mjs; do
+    if [ -f "$SRC_DIR/installer/$f" ]; then
+        cp "$SRC_DIR/installer/$f" "$MCP_DIR/installer/$f"
+    elif ! [ -f "$MCP_DIR/installer/$f" ]; then
+        curl -fsSL "https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$BRANCH/installer/$f" \
+            -o "$MCP_DIR/installer/$f" 2>/dev/null || true
+    fi
+done
+[ -f "$MCP_DIR/installer/merge-opencode-config.mjs" ] || die "merge module missing"
+[ -f "$MCP_DIR/installer/doctor.mjs" ] || die "doctor missing"
+
 cp "$MCP_DIR/begemot_prompt.md" "$PROMPT_FILE"
 cp "$MCP_DIR/plugins/greenlight/index.js" "$PLUGIN_DIR/index.js"
 if [ -f "$MCP_DIR/plugins/greenlight/package.json" ]; then
@@ -164,89 +179,39 @@ ok "plugin -> $PLUGIN_DIR"
 # ------------------------------------------------------------
 # [4/7] npm install
 # ------------------------------------------------------------
-step "[4/7] npm install..."
+step "[4/8] npm install..."
 ( cd "$MCP_DIR" && "$NPM_BIN" install --no-audit --no-fund ) || die "npm install failed"
 ok "dependencies installed"
 
 # ------------------------------------------------------------
-# [5/7] Configure OpenCode (JSONC-safe merge + backup)
+# [5/8] Configure OpenCode (surgical JSONC merge + backup)
 # ------------------------------------------------------------
-step "[5/7] Configuring OpenCode..."
-if [ -f "$CONFIG_DIR/opencode.jsonc" ]; then
-    CONFIG_FILE="$CONFIG_DIR/opencode.jsonc"
-elif [ -f "$CONFIG_DIR/opencode.json" ]; then
-    CONFIG_FILE="$CONFIG_DIR/opencode.json"
-else
-    CONFIG_FILE="$CONFIG_DIR/opencode.jsonc"
-fi
-if [ -f "$CONFIG_FILE" ]; then
-    BACKUP="$CONFIG_FILE.bak.$(date +%Y%m%d%H%M%S)"
-    cp "$CONFIG_FILE" "$BACKUP"
-    printf "${DIM}  backup: %s${NC}\n" "$BACKUP"
-fi
+step "[5/8] Configuring OpenCode..."
+mkdir -p "$CONFIG_DIR"
 
-cat > "$TMP_BEGEMOT/merge.js" <<'__BEGEMOT_MERGE_JS_EOF__'
-const fs = require('fs');
-const [cfgPath, promptPath, mcpDir, nodeExe, pluginPath] = process.argv.slice(2);
+# back up every config file we are about to touch
+for CF in "$CONFIG_DIR/opencode.jsonc" "$CONFIG_DIR/opencode.json"; do
+    if [ -f "$CF" ]; then
+        BACKUP="$CF.bak.$(date +%Y%m%d%H%M%S)"
+        cp "$CF" "$BACKUP"
+        printf "${DIM}  backup: %s${NC}\n" "$BACKUP"
+    fi
+done
 
-function stripJsonc(s) {
-    let out = '', i = 0, inStr = false, esc = false;
-    while (i < s.length) {
-        const c = s[i], n = s[i + 1];
-        if (inStr) {
-            out += c;
-            if (esc) { esc = false; }
-            else if (c === '\\') { esc = true; }
-            else if (c === '"') { inStr = false; }
-            i++; continue;
-        }
-        if (c === '"') { inStr = true; out += c; i++; continue; }
-        if (c === '/' && n === '/') { while (i < s.length && s[i] !== '\n') i++; continue; }
-        if (c === '/' && n === '*') { i += 2; while (i < s.length && !(s[i] === '*' && s[i + 1] === '/')) i++; i += 2; continue; }
-        out += c; i++;
-    }
-    return out;
-}
-
-let cfg = {};
-if (fs.existsSync(cfgPath)) {
-    const raw = fs.readFileSync(cfgPath, 'utf8').replace(/^\uFEFF/, '');
-    const text = stripJsonc(raw).replace(/,\s*([}\]])/g, '$1');
-    try { cfg = JSON.parse(text); }
-    catch (e) { console.error('JSON parse failed: ' + e.message); process.exit(2); }
-}
-
-if (!cfg.mcp) cfg.mcp = {};
-if (!cfg.mcp.servers) cfg.mcp.servers = {};
-cfg.mcp.servers['begemot-traffic-light'] = {
-    type: 'local',
-    command: [nodeExe, mcpDir + '/server.js'],
-    codemode: false
-};
-
-if (!Array.isArray(cfg.instructions)) cfg.instructions = [];
-if (!cfg.instructions.includes(promptPath)) cfg.instructions.push(promptPath);
-
-if (pluginPath) {
-    if (!Array.isArray(cfg.plugins)) cfg.plugins = [];
-    const already = cfg.plugins.some(function (p) {
-        return typeof p === 'string' && p.replace(/\\/g, '/').indexOf('/plugins/greenlight') !== -1;
-    });
-    if (!already) cfg.plugins.push(pluginPath);
-}
-
-fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-console.log('merged');
-__BEGEMOT_MERGE_JS_EOF__
-
-"$NODE_BIN" "$TMP_BEGEMOT/merge.js" "$CONFIG_FILE" "$PROMPT_FILE" "$MCP_DIR" "$NODE_BIN" "$PLUGIN_DIR" \
+# The module writes into EVERY config file that exists (OpenCode unions
+# opencode.json and opencode.jsonc, so a single file could leave the entry
+# shadowed by the other one's mcp block) and keeps each file's own shape:
+# flat mcp.<name> stays flat, mcp.servers stays nested. The file is edited as
+# text, so the user's comments and formatting survive.
+"$NODE_BIN" "$MCP_DIR/installer/merge-opencode-config.mjs" \
+    "$CONFIG_DIR" "$PROMPT_FILE" "$MCP_DIR" "$NODE_BIN" "$PLUGIN_DIR" "auto" \
     || die "config merge failed"
-ok "config -> $CONFIG_FILE"
+ok "OpenCode config updated"
 
 # ------------------------------------------------------------
 # [6/7] Local Streamable HTTP endpoint (autostart, no Docker)
 # ------------------------------------------------------------
-step "[6/7] Local HTTP endpoint on 127.0.0.1:$HTTP_PORT (no Docker)..."
+step "[6/8] Local HTTP endpoint on 127.0.0.1:$HTTP_PORT (no Docker)..."
 
 # kill a previous instance so the new code is picked up
 pkill -f 'server-http\.mjs' >/dev/null 2>&1 || true
@@ -338,9 +303,9 @@ if [ -n "$HEALTH" ]; then ok "health: $HEALTH"
 else warn "endpoint not answering yet - see $MCP_DIR/http.log"; fi
 
 # ------------------------------------------------------------
-# [7/7] Restart OpenCode service
+# [7/8] Restart OpenCode service
 # ------------------------------------------------------------
-step "[7/7] Restarting OpenCode service..."
+step "[7/8] Restarting OpenCode service..."
 CLI=""
 if command -v opencode >/dev/null 2>&1; then
     CLI="$(command -v opencode)"
@@ -369,11 +334,26 @@ else
     warn "MCP not listed yet - open a new chat / restart OpenCode"
 fi
 
+# ------------------------------------------------------------
+# [8/8] Self-check: prove the server really starts and answers
+# ------------------------------------------------------------
+step "[8/8] Self-check..."
+if ! "$NODE_BIN" "$MCP_DIR/installer/doctor.mjs" \
+        --mcp-dir "$MCP_DIR" --config-dir "$CONFIG_DIR" --http-port "$HTTP_PORT"; then
+    err "self-check FAILED - the install does not work yet"
+    err "fix the problem marked [FAIL] above, then re-run the installer"
+    die "self-check failed"
+fi
+ok "self-check passed - the MCP server starts and answers"
+
 printf "\n${GREEN}  ============================================${NC}\n"
 printf "${GREEN}  INSTALL COMPLETE${NC}\n"
 printf "${GREEN}  ============================================${NC}\n"
 printf "${CYAN}  MCP server   : %s${NC}\n" "$MCP_DIR"
-printf "${CYAN}  Config       : %s${NC}\n" "$CONFIG_FILE"
+printf "${CYAN}  Config dir   : %s${NC}\n" "$CONFIG_DIR"
+for CF in opencode.jsonc opencode.json; do
+    [ -f "$CONFIG_DIR/$CF" ] && printf "${CYAN}  Config file  : %s${NC}\n" "$CF"
+done
 printf "${CYAN}  Prompt       : %s${NC}\n" "$PROMPT_FILE"
 printf "${CYAN}  Plugin       : %s${NC}\n" "$PLUGIN_DIR"
 printf "${CYAN}  HTTP endpoint: http://127.0.0.1:%s/mcp  (autostart, no Docker)${NC}\n" "$HTTP_PORT"

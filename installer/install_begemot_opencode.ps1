@@ -22,14 +22,13 @@ $RepoUrl   = "https://github.com/$RepoOwner/$RepoName"
 $HomeDir    = $env:USERPROFILE
 $McpDir     = Join-Path $HomeDir "Documents\MCP\begemot-mcp"
 $ConfigDir  = Join-Path $HomeDir ".config\opencode"
-$ConfigFile = Join-Path $ConfigDir "opencode.jsonc"
 $PromptFile = Join-Path $ConfigDir "begemot_prompt.md"
 $PluginDst  = Join-Path $ConfigDir "plugins\greenlight"
 $HttpPort   = 8788
 $TaskName   = "BegemotMcpHttp"
 $ApiKey     = "9db6f52871e4c30a"
 
-$STEPS_TOTAL = 7
+$STEPS_TOTAL = 8
 
 function Banner {
     Write-Host ""
@@ -76,7 +75,7 @@ if (-not $CliPath) {
 }
 
 # ============================================================
-# [1/7] Node.js
+# [1/8] Node.js
 # ============================================================
 Step 1 "Node.js..."
 $nodeCmd = $null
@@ -116,7 +115,7 @@ if (-not $NpmExe) { Die "npm not found. Reinstall Node.js: https://nodejs.org/" 
 Ok "npm: $NpmExe"
 
 # ============================================================
-# [2/7] Fetch the current source from GitHub (no embedded payload)
+# [2/8] Fetch the current source from GitHub (no embedded payload)
 # ============================================================
 Step 2 "Fetching $RepoOwner/$RepoName @ $Branch ..."
 $SrcRoot = Join-Path $env:TEMP "begemot-src"
@@ -182,7 +181,7 @@ if (-not $SrcDir) {
 }
 
 # ============================================================
-# [3/7] Deploy files
+# [3/8] Deploy files
 # ============================================================
 Step 3 "Deploying to $McpDir ..."
 if (-not (Test-Path $McpDir)) { New-Item -Path $McpDir -ItemType Directory -Force | Out-Null }
@@ -215,7 +214,7 @@ Copy-Item -Path (Join-Path $McpDir "plugins\greenlight\*") -Destination $PluginD
 Ok "plugin  -> $PluginDst"
 
 # ============================================================
-# [4/7] npm install
+# [4/8] npm install
 # ============================================================
 Step 4 "npm install..."
 $npmResult = Start-Process -FilePath $NpmExe -ArgumentList @("install", "--no-audit", "--no-fund") `
@@ -224,81 +223,55 @@ if ($npmResult.ExitCode -eq 0 -and (Test-Path (Join-Path $McpDir "node_modules\@
     Ok "dependencies installed"
 }
 elseif ($npmResult.ExitCode -eq 0) {
-    Warn "npm exited 0 but @modelcontextprotocol/sdk is missing - retry with: cd `"$McpDir`" && npm.cmd install"
+    # npm can exit 0 and still leave the SDK out (offline mirror, broken cache).
+    # Without it the stdio server cannot start, so this is fatal, not a warning.
+    Die "npm exited 0 but @modelcontextprotocol/sdk is missing - run: cd `"$McpDir`" && npm install"
 }
 else { Die "npm install failed (exit $($npmResult.ExitCode))" }
 
 # ============================================================
-# [5/7] Configure OpenCode (JSONC-safe merge + backup)
+# [5/8] Configure OpenCode (surgical JSONC merge + backup)
 # ============================================================
 Step 5 "Configuring OpenCode..."
 if (-not (Test-Path $ConfigDir)) { New-Item -Path $ConfigDir -ItemType Directory -Force | Out-Null }
-if (Test-Path $ConfigFile) {
-    $backup = "$ConfigFile.bak.$(Get-Date -Format 'yyyyMMddHHmmss')"
-    Copy-Item $ConfigFile $backup -Force
-    Write-Host "  backup: $backup" -ForegroundColor DarkGray
-}
 
-$nodeScript = Join-Path $env:TEMP "begemot_oc_merge.js"
-@'
-const fs = require('fs');
-const cfgPath = process.argv[2];
-const promptPath = process.argv[3];
-const mcpDir = process.argv[4];
-const nodeExe = process.argv[5] || 'node';
-const pluginPath = process.argv[6];
-
-function stripJsonc(s) {
-    let out = '', i = 0, inStr = false, esc = false;
-    while (i < s.length) {
-        const c = s[i], n = s[i + 1];
-        if (inStr) {
-            out += c;
-            if (esc) { esc = false; }
-            else if (c === '\\') { esc = true; }
-            else if (c === '"') { inStr = false; }
-            i++; continue;
-        }
-        if (c === '"') { inStr = true; out += c; i++; continue; }
-        if (c === '/' && n === '/') { while (i < s.length && s[i] !== '\n') i++; continue; }
-        if (c === '/' && n === '*') { i += 2; while (i < s.length && !(s[i] === '*' && s[i + 1] === '/')) i++; i += 2; continue; }
-        out += c; i++;
+# The merge is a separate module so both installers (Windows + POSIX) use the
+# exact same logic, and so the config is edited as TEXT: comments, key order
+# and formatting of the user survive. A parse/serialize round trip would wipe
+# them and re-format the whole file.
+$mergeScript = Join-Path $McpDir "installer\merge-opencode-config.mjs"
+if (-not (Test-Path $mergeScript)) {
+    $rawUrl = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Branch/installer/merge-opencode-config.mjs"
+    try {
+        Invoke-WebRequest -Uri $rawUrl -OutFile $mergeScript -UseBasicParsing
+        Ok "merge module fetched from GitHub"
+    } catch {
+        Die "cannot obtain merge-opencode-config.mjs ($($_.Exception.Message))"
     }
-    return out;
 }
 
-let cfg = {};
-if (fs.existsSync(cfgPath)) {
-    const raw = fs.readFileSync(cfgPath, 'utf8').replace(/^\uFEFF/, '');
-    const text = stripJsonc(raw).replace(/,\s*([}\]])/g, '$1');
-    try { cfg = JSON.parse(text); }
-    catch (e) { console.error('JSON parse failed: ' + e.message); process.exit(2); }
+# Back up every config file we are about to touch.
+foreach ($cf in @("opencode.jsonc", "opencode.json")) {
+    $p = Join-Path $ConfigDir $cf
+    if (Test-Path $p) {
+        $backup = "$p.bak.$(Get-Date -Format 'yyyyMMddHHmmss')"
+        Copy-Item $p $backup -Force
+        Write-Host "  backup: $backup" -ForegroundColor DarkGray
+    }
 }
-if (!cfg.mcp) cfg.mcp = {};
-if (!cfg.mcp.servers) cfg.mcp.servers = {};
-cfg.mcp.servers['begemot-traffic-light'] = {
-    type: 'local',
-    command: [nodeExe, mcpDir + '\\server.js'],
-    codemode: false
-};
-if (!Array.isArray(cfg.instructions)) cfg.instructions = [];
-if (!cfg.instructions.includes(promptPath)) cfg.instructions.push(promptPath);
-if (pluginPath) {
-    if (!Array.isArray(cfg.plugins)) cfg.plugins = [];
-    const already = cfg.plugins.some((p) => typeof p === 'string' && p.replace(/\\/g, '/').indexOf('/plugins/greenlight') !== -1);
-    if (!already) cfg.plugins.push(pluginPath);
-}
-fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
-console.log('merged');
-'@ | Set-Content $nodeScript -Encoding utf8
 
-& $NodeExe $nodeScript $ConfigFile $PromptFile $McpDir $NodeExe $PluginDst
-if ($LASTEXITCODE -ne 0) { Warn "config merge may have failed" }
-else { Ok "opencode.jsonc updated" }
-Remove-Item $nodeScript -ErrorAction SilentlyContinue
+# The module writes into EVERY config file that exists (opencode.jsonc and
+# opencode.json are unioned by OpenCode, so a single file could leave the
+# entry shadowed by the other one's mcp block) and keeps each file's own
+# shape: flat mcp.<name> stays flat, mcp.servers stays nested.
+$mergeOut = & $NodeExe $mergeScript $ConfigDir $PromptFile $McpDir $NodeExe $PluginDst "auto" 2>&1
+$mergeExit = $LASTEXITCODE
+foreach ($line in $mergeOut) { Write-Host "  $line" -ForegroundColor DarkGray }
+if ($mergeExit -ne 0) { Die "config merge failed (exit $mergeExit)" }
+Ok "OpenCode config updated"
 
 # ============================================================
-# [6/7] Local Streamable HTTP endpoint (autostart, no Docker)
+# [6/8] Local Streamable HTTP endpoint (autostart, no Docker)
 # ============================================================
 Step 6 "Local HTTP endpoint on 127.0.0.1:$HttpPort (no Docker)..."
 
@@ -363,14 +336,22 @@ if ($health) { Ok "health: $health" }
 else { Warn "endpoint not answering yet - check with: type $McpDir\*.log" }
 
 # ============================================================
-# [7/7] Restart service + verify MCP
+# [7/8] Restart service + verify MCP
 # ============================================================
 Step 7 "Restarting OpenCode + verifying..."
+$restarted = $false
 if ($CliPath -and (Test-Path $CliPath)) {
-    try { & $CliPath service restart 2>&1 | Out-Null; Ok "service restarted" }
-    catch { Warn "service restart skipped" }
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $CliPath service restart 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { $restarted = $true }
+    } catch { }
+    finally { $ErrorActionPreference = $eap }
+    if ($restarted) { Ok "service restarted" }
+    else { Warn "service restart failed - restart the OpenCode app by hand" }
 } else {
-    Warn "opencode-cli.exe not found; restart the OpenCode app manually."
+    Warn "the opencode CLI was not found - restart the OpenCode app by hand"
 }
 
 Start-Sleep -Seconds 2
@@ -381,13 +362,38 @@ if ($CliPath -and (Test-Path $CliPath)) {
 }
 
 # ============================================================
+# [8/8] Self-check: prove the server really starts and answers
+# ============================================================
+Step 8 "Self-check..."
+$doctorScript = Join-Path $McpDir "installer\doctor.mjs"
+if (-not (Test-Path $doctorScript)) {
+    $rawUrl = "https://raw.githubusercontent.com/$RepoOwner/$RepoName/$Branch/installer/doctor.mjs"
+    try { Invoke-WebRequest -Uri $rawUrl -OutFile $doctorScript -UseBasicParsing }
+    catch { Die "cannot obtain doctor.mjs ($($_.Exception.Message))" }
+}
+$eap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+try { & $NodeExe $doctorScript --mcp-dir $McpDir --config-dir $ConfigDir --http-port $HttpPort }
+finally { $ErrorActionPreference = $eap }
+$doctorExit = $LASTEXITCODE
+if ($doctorExit -ne 0) {
+    Err "self-check FAILED - the install does not work yet"
+    Err "fix the problem marked [FAIL] above, then re-run the installer"
+    Die "self-check failed"
+}
+Ok "self-check passed - the MCP server starts and answers"
+
+# ============================================================
 Write-Host ""
 Write-Host "  ============================================" -ForegroundColor Green
 Write-Host "  INSTALL COMPLETE" -ForegroundColor Green
 Write-Host "  ============================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "  MCP server   : $McpDir" -ForegroundColor Cyan
-Write-Host "  Config       : $ConfigFile" -ForegroundColor Cyan
+Write-Host "  Config dir   : $ConfigDir" -ForegroundColor Cyan
+foreach ($cf in @("opencode.jsonc", "opencode.json")) {
+    if (Test-Path (Join-Path $ConfigDir $cf)) { Write-Host "  Config file  : $cf" -ForegroundColor Cyan }
+}
 Write-Host "  Prompt       : $PromptFile" -ForegroundColor Cyan
 Write-Host "  Plugin       : $PluginDst" -ForegroundColor Cyan
 Write-Host "  HTTP endpoint: http://127.0.0.1:$HttpPort/mcp  (autostart, no Docker)" -ForegroundColor Cyan

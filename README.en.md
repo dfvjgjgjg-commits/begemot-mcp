@@ -90,12 +90,48 @@ Security posture: stateless (`sessionIdGenerator: undefined`), `allowShell: fals
 1. Node.js check / install (MSI / Homebrew / official tarball)
 2. **Fetch the source from GitHub** — `git clone --depth 1`, else the branch zip, else raw files one by one
 3. File placement: `mcp/*` → server dir, plugin + prompt → `~/.config/opencode`
-4. `npm install` (verifies `@modelcontextprotocol/sdk` landed)
-5. OpenCode config merge (`mcp` + `instructions` + `plugins`) with JSONC-safe parsing and a backup
+4. `npm install` (verifies `@modelcontextprotocol/sdk` landed; a missing SDK is fatal)
+5. OpenCode config merge (`mcp` + `instructions` + `plugins`) — **surgical, as text**: the user's comments and formatting survive; the entry is written into every existing config file (`opencode.jsonc` and `opencode.json`), each file keeps its own shape
 6. **Local Streamable HTTP on `127.0.0.1:8788` with autostart** — Windows: Scheduled Task at logon; macOS: LaunchAgent; Linux: systemd user unit / crontab `@reboot` / `nohup`. No Docker, no cloud.
-7. Service restart + connection and `/health` verification
+7. OpenCode service restart with **exit-code verification** + `mcp list` cross-check
+8. **Self-check**: the installer really spawns `server.js` over stdio and calls `check_traffic_light`. If anything is broken it does not claim success — it prints the report and exits with an error
 
 The tail prints the paths, the health response, a ready-made `x-api-key` header for `type: "remote"`, and the command to remove the autostart.
+
+---
+
+## If it does not work
+
+The installer checks itself, but if something went wrong (an antivirus ate a file,
+`npm` could not reach the registry, OpenCode reads a different config file) — run
+the diagnostics by hand:
+
+```powershell
+# Windows
+node "$env:USERPROFILE\Documents\MCP\begemot-mcp\installer\doctor.mjs"
+```
+
+```bash
+# macOS / Linux
+node "${XDG_DATA_HOME:-$HOME/.local/share}/begemot-mcp/installer/doctor.mjs"
+```
+
+Output: `[ OK ]` / `[WARN]` / `[FAIL]` for every link of the chain, then
+`RESULT: PASS` or `RESULT: FAIL`. The first `[FAIL]` line is the cause. Common ones:
+
+| `[FAIL]` | cause | fix |
+| --- | --- | --- |
+| `sdk` | `@modelcontextprotocol/sdk` is not installed | `cd ~/Documents/MCP/begemot-mcp && npm install` |
+| `files` | the server tree is incomplete | re-run the installer |
+| `config` | no `begemot-traffic-light` entry in the config | re-run the installer |
+| `config` | `command` points at a missing file | re-run the installer (it rewrites the entry) |
+| `stdio` | the server does not start or does not answer | `node ~/Documents/MCP/begemot-mcp/server.js` shows the reason |
+| `prompt` / `plugin` | the rules or the plugin are missing | re-run the installer |
+
+Attach the doctor report to a bug report — it shows exactly where the chain breaks.
+
+> If `mcp list` shows the server but a chat does not see it, restart the OpenCode
+> app itself (not just the service): the MCP server list is read at startup.
 
 ---
 
