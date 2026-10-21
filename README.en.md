@@ -7,13 +7,13 @@
 3. **`remote/`** — network serving: Cloudflare Worker, `wrangler.jsonc`, Dockerfile and the `remote/REMOTE.md` runbook.
 4. **`installer/`** — one-click installers for Windows, macOS and Linux that set everything up (Node.js, MCP server, config, prompt, plugin).
 
-> 🦛 Made for my beloved Lolz.
+> Made for my beloved Lolz.
 
 **What's new in 6.4.1 / 6.4.0 / 6.3.0 — see [CHANGELOG.md](CHANGELOG.md)** (installer with no embedded payload + local HTTP autostart without Docker, reasoning protocol, `instructions`/prompts/resources, front-of-system-prompt injection, HTTP/Worker/Docker, shared key).
 
 ---
 
-## 🔑 API key — one for everyone
+## API key — one for everyone
 
 The key **`9db6f52871e4c30a`** is baked into `mcp/server-http.mjs` and `remote/worker.js` as the default, so **it works for everybody**: whoever deploys this repo, the server already answers to that same key, and one client config fits every instance.
 
@@ -35,7 +35,7 @@ The key **`9db6f52871e4c30a`** is baked into `mcp/server-http.mjs` and `remote/w
 
 ```sh
 cd mcp && npm install && npm run start:http
-# 🦛 Begemot MCP v6.4.1 — Streamable HTTP on http://0.0.0.0:8788/mcp
+# Begemot MCP v6.4.1 — Streamable HTTP on http://0.0.0.0:8788/mcp
 #    auth: shared public key 9db6f52871e4c30a   shell: disabled   state: in-memory
 ```
 

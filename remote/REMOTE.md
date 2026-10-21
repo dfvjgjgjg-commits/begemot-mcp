@@ -92,7 +92,7 @@ git clone https://github.com/dfvjgjgjg-commits/begemot-mcp
 cd begemot-mcp/mcp
 npm install
 PORT=8788 node server-http.mjs
-# 🦛 Begemot MCP v6.4.1 — Streamable HTTP on http://0.0.0.0:8788/mcp
+# Begemot MCP v6.4.1 — Streamable HTTP on http://0.0.0.0:8788/mcp
 #    auth: shared public key 9db6f52871e4c30a
 ```
 
@@ -213,5 +213,5 @@ curl -X POST https://begemot.example.com/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"c","version":"1"}}}'
 ```
 
-Дальше `opencode mcp list` → `✓ begemot connected`, и в системном промпте
+Дальше `opencode mcp list` → `begemot connected`, и в системном промпте
 появляется `<mcp_instructions>` с протоколом рассуждения.

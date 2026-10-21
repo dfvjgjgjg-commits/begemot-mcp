@@ -1,6 +1,6 @@
 ﻿{
   "name": "begemot-traffic-light",
-  "version": "6.4.1",
+  "version": "6.4.2",
   "description": "Begemot MCP - traffic light controller for OpenCode (stdio local + Streamable HTTP remote, shared public API key)",
   "main": "server.js",
   "type": "module",

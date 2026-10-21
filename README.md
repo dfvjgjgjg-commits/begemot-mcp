@@ -9,13 +9,13 @@
 3. **`remote/`** — удалённая раздача: Cloudflare Worker, `wrangler.jsonc`, Dockerfile и runbook `remote/REMOTE.md`.
 4. **`installer/`** — установщики в один клик под Windows, macOS и Linux (Node.js, MCP-сервер, конфиг, промпт, плагин).
 
-> 🦛 Сделано для моего любимого Лолза.
+> Сделано для моего любимого Лолза.
 
 **Что нового в 6.4.1 / 6.4.0 / 6.3.0 — см. [CHANGELOG.md](CHANGELOG.md)** (установщик без вшитых файлов + локальный HTTP-автозапуск без Docker, протокол рассуждения, `instructions`/промпты/ресурсы, инжект в начало системного промпта, HTTP/Worker/Docker, общий ключ).
 
 ---
 
-## 🔑 API-ключ — один на всех
+## API-ключ — один на всех
 
 Ключ **`9db6f52871e4c30a`** зашит в `mcp/server-http.mjs` и `remote/worker.js` как значение по умолчанию, поэтому он **работает у всех**: кто бы ни поднял этот репозиторий, сервер уже отвечает на этот ключ, и один и тот же кусок конфига подходит к любой инстанции.
 
@@ -39,7 +39,7 @@
 
 ```sh
 cd mcp && npm install && npm run start:http
-# 🦛 Begemot MCP v6.4.1 — Streamable HTTP on http://0.0.0.0:8788/mcp
+# Begemot MCP v6.4.1 — Streamable HTTP on http://0.0.0.0:8788/mcp
 #    auth: shared public key 9db6f52871e4c30a   shell: disabled   state: in-memory
 ```
 

@@ -35,7 +35,7 @@ process.on("unhandledRejection", (e) => log("unhandledRejection:", e));
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  log(`🦛 Begemot MCP v${core.VERSION} — stdio, config-driven, safe shell, history, crash-proof`);
+  log(`Begemot MCP v${core.VERSION} — stdio, config-driven, safe shell, history, crash-proof`);
 }
 
 main().catch((err) => { log("Fatal:", err && err.stack ? err.stack : err); process.exit(1); });

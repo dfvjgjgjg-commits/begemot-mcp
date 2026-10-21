@@ -143,7 +143,7 @@ if (AS_URL) {
 /* boot                                                                */
 /* ------------------------------------------------------------------ */
 const listener = app.listen(PORT, HOST, () => {
-  log(`🦛 Begemot MCP v${core.VERSION} — Streamable HTTP on http://${HOST}:${PORT}/mcp`);
+  log(`Begemot MCP v${core.VERSION} — Streamable HTTP on http://${HOST}:${PORT}/mcp`);
   log(`   auth: ${!API_KEY ? "NONE (public)" : usingSharedKey ? `shared public key ${SHARED_KEY}` : "custom API key"}   shell: disabled   state: in-memory`);
   if (!API_KEY) log("   WARNING: BEGEMOT_API_KEY is set to an empty string — anyone with the URL can call this server.");
   else if (usingSharedKey) log(`   shared key: clients can use x-api-key: ${SHARED_KEY} (or Authorization: Bearer ${SHARED_KEY})`);
