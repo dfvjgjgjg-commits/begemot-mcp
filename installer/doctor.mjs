@@ -303,7 +303,7 @@ for (const [tag, label, detail] of lines) {
     console.log("\n" + label + "\n" + "=".repeat(label.length));
     continue;
   }
-  console.log(TAGS[tag] ? TAGS[tag] + " " : "") + label.padEnd(12) + " " + detail;
+  console.log((TAGS[tag] ? TAGS[tag] + " " : "") + label.padEnd(12) + " " + detail);
 }
 console.log("");
 console.log(failed ? "RESULT: FAIL (" + failed + " critical problem(s))" : "RESULT: PASS");
