@@ -12,10 +12,45 @@
 | `worker.js` | **Cloudflare Worker** — stateless, бесплатный хостинг |
 | `Dockerfile` | контейнер для VPS / Fly / Render / Railway |
 | `wrangler.jsonc` | конфиг Cloudflare Workers |
+| `../package.json` (корень) | workspace: SDK + express + wrangler, `npm run start` / `start:http` / `worker:deploy` |
+| `../CHANGELOG.md` | что и в какой версии добавлено |
 
 Ядро одно. Транспорт выбирается точкой входа, поэтому логика не дублируется.
+Все пути внутри ядра (`config.json`, `state.json`) резолвятся от `import.meta.url`,
+а не от рабочей директории — запуск из корня репозитория безопасен.
 
-## 2. Как OpenCode V2 подключается к удалённому MCP
+## 2. Общий API-ключ (один на всех)
+
+Ключ **`9db6f52871e4c30a`** зашит в код обоих транспортов как значение по умолчанию — в
+`mcp/server-http.mjs` (`SHARED_KEY`) и `remote/worker.js` (`SHARED_KEY`). Поэтому:
+
+- запуск `node server-http.mjs` без единой переменной окружения **уже** требует этот ключ;
+- `npx wrangler deploy` **уже** отвечает на него — секрет ставить необязательно;
+- один и тот же кусок `opencode.jsonc` подходит к любой инстанции этого репо.
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "begemot": {
+        "type": "remote",
+        "url": "https://begemot.example.com/mcp",
+        "oauth": false,
+        "headers": { "x-api-key": "9db6f52871e4c30a" }
+      }
+    }
+  }
+}
+```
+
+Равнозначно и `Authorization: Bearer 9db6f52871e4c30a`.
+
+Перекрыть: `BEGEMOT_API_KEY=<свой>` (Node) или `npx wrangler secret put BEGEMOT_API_KEY`
+(Workers). Пустая строка — гейт выключен совсем. `GET /health` отдаёт
+`key_source: "shared" | "custom" | "open"` — по нему видно, каким ключом живёт инстанс.
+
+## 3. Как OpenCode V2 подключается к удалённому MCP
 
 OpenCode различает `type: "local"` (stdio, процесс на машине) и `type: "remote"`
 (Streamable HTTP, абсолютный URL). Удалённый сервер по умолчанию использует OAuth;
@@ -37,7 +72,7 @@ opencode mcp list
         "type": "remote",
         "url": "https://begemot.example.com/mcp",
         "oauth": false,
-        "headers": { "x-api-key": "{env:BEGEMOT_API_KEY}" }
+        "headers": { "x-api-key": "9db6f52871e4c30a" }   // общий ключ; свой — {env:BEGEMOT_API_KEY}
       }
     }
   }
@@ -48,14 +83,23 @@ opencode mcp list
 системный промпт** — то есть reasoning protocol доезжает до модели и по HTTP,
 без локального плагина. Плюс инструменты и промпты (`/begemot:begemot_execute`).
 
-## 3. Вариант A — Node/Express + API key
+## 4. Вариант A — Node/Express + API key
 
 Самый быстрый путь: любой VPS, Fly.io, Render, Railway.
 
 ```sh
 git clone https://github.com/dfvjgjgjg-commits/begemot-mcp
-cd begemot-mcp
+cd begemot-mcp/mcp
 npm install
+PORT=8788 node server-http.mjs
+# 🦛 Begemot MCP v6.4.0 — Streamable HTTP on http://0.0.0.0:8788/mcp
+#    auth: shared public key 9db6f52871e4c30a
+```
+
+Отдельный ключ задавать **не нужно** — без переменных сервер принимает общий публичный
+ключ `9db6f52871e4c30a`. Свой:
+
+```sh
 BEGEMOT_API_KEY=<случайный_ключ> PORT=8788 node server-http.mjs
 ```
 
@@ -72,7 +116,7 @@ docker run -d -p 8788:8788 -e BEGEMOT_API_KEY=<ключ> begemot-mcp
 |---|---|
 | `PORT` | порт, по умолчанию 8788 |
 | `HOST` | `0.0.0.0` за прокси, `127.0.0.1` если прокси на той же машине |
-| `BEGEMOT_API_KEY` | если задан — каждый `/mcp` требует `Authorization: Bearer <ключ>` или `x-api-key: <ключ>` |
+| `BEGEMOT_API_KEY` | свой ключ вместо общего публичного; пустая строка — гейт выключен. Без неё действует `9db6f52871e4c30a` |
 | `BEGEMOT_ALLOWED_HOSTS` | запятая-разделённый список Host при бинде на `0.0.0.0` (защита от DNS rebinding) |
 | `BEGEMOT_PUBLIC_URL` | публичный origin, для OAuth-метаданных |
 | `BEGEMOT_OAUTH_AS_URL` | если задан — публикует RFC 9728 `/.well-known/oauth-protected-resource` |
@@ -81,15 +125,30 @@ docker run -d -p 8788:8788 -e BEGEMOT_API_KEY=<ключ> begemot-mcp
 
 ```sh
 curl https://begemot.example.com/health
-# {"ok":true,"version":"6.3.0","transport":"streamable-http","mode":"stateless","shell_enabled":false,"auth":"api-key"}
+# {"ok":true,"version":"6.4.0","transport":"streamable-http","mode":"stateless",
+#  "shell_enabled":false,"auth":"api-key","key_source":"shared", ...}
 ```
 
-## 4. Вариант B — Cloudflare Workers (рекомендуется для раздачи людям)
+## 5. Вариант B — Cloudflare Workers (рекомендуется для раздачи людям)
 
 Stateless, бесплатный тир, свой домен, нет сервера.
 
+Конфиг лежит в `remote/wrangler.jsonc`, entrypoint — `remote/worker.js`, а `worker.js`
+тянет `../mcp/core.mjs`, поэтому деплой идёт **из корня репозитория**:
+
 ```sh
-npx wrangler deploy
+git clone https://github.com/dfvjgjgjg-commits/begemot-mcp
+cd begemot-mcp
+npm install                 # SDK + express + wrangler, в корне
+npm run worker:deploy       # = wrangler deploy -c remote/wrangler.jsonc
+```
+
+Локально проверить перед деплоем: `npm run worker:dev`.
+
+Секрет ставить **необязательно** — без него принимается общий публичный ключ
+`9db6f52871e4c30a`. Свой:
+
+```sh
 npx wrangler secret put BEGEMOT_API_KEY
 ```
 
@@ -118,7 +177,7 @@ export default new OAuthProvider({
 Секреты: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `COOKIE_ENCRYPTION_KEY`, плюс
 KV-неймспейс `OAUTH_KV`. Тогда в OpenCode просто `--url` без `oauth: false`.
 
-## 5. Что обязательно учесть
+## 6. Что обязательно учесть
 
 1. **`run_code` в удалённой сборке отсутствует.** Он зарегистрирован только в
    `server.js` (stdio). `createCore({ allowShell: false })` его не добавляет, а
@@ -127,11 +186,16 @@ KV-неймспейс `OAUTH_KV`. Тогда в OpenCode просто `--url` б
    Map и обнуляется с процессом. Для протокольной работы это не важно; если нужна
    сквозная история — подключи KV/Postgres и передавай ключ из
    `_meta["ai.opencode/sessionID"]` (OpenCode его присылает).
-3. **Авторизация обязательна.** Публичный URL без ключа = открытый MCP.
+3. **Авторизация на месте по умолчанию.** Публичный URL закрыт общим ключом; гейт
+   отключается только явно — `BEGEMOT_API_KEY=""`.
 4. **HTTPS обязателен.** OpenCode требует абсолютный URL; за прокси — терминируй TLS.
-5. **Ключ — в переменные окружения**, не в конфиг и не в репозиторий.
+5. **Свой ключ — в переменные окружения / Wrangler secret.** Общий `9db6f52871e4c30a`
+   публикован намеренно: чтобы он «работал у всех» и один конфиг подходил к любой
+   инстанции. Приватный деплой с индивидуальным ключом — просто `BEGEMOT_API_KEY=<свой>`.
+6. **Ключ ≠ авторизация на уровне модели.** Это вход на сервер MCP; что модель будет
+   делать с запросом, решает сама модель.
 
-## 6. Проверка после деплоя
+## 7. Проверка после деплоя
 
 ```sh
 # 1. health

@@ -2,13 +2,50 @@
 
 > привет лолз и  и так я вам представляю долгострой это mcp который хукает отказы и  меняет  ее   на выполние запроса изначально я хотел выпустить его для антигравити но там вышел фикс этого  способа и  да этот способ уже пофикшен на биг пикл но он работает на дипсик 4.1 вы можетее изменять этот mcp под свои ide  может он там будет еще работать  всем удачаного испозывания
 
-**Бегемот на светофоре** — слой персоны / воркфлоу для [OpenCode](https://opencode.ai) из трёх частей:
+**Бегемот на светофоре** — слой персоны / воркфлоу для [OpenCode](https://opencode.ai) из четырёх частей:
 
-1. **`mcp/`** — MCP-сервер (`begemot-traffic-light`), который ведёт «светофор» по шагам 0→10 и возвращает структурированный блок-директиву.
-2. **`plugin/greenlight/`** — плагин OpenCode V2, который автоматически внедряет директиву зелёного света в каждый запрос модели и реагирует на отказы.
-3. **`installer/`** — установщики в один клик под Windows и macOS (Node.js, MCP-сервер, конфиг, промпт, плагин).
+1. **`mcp/`** — MCP-сервер (`begemot-traffic-light`, **v6.4.0**): ведёт «светофор» по шагам 0→10, отдаёт блок-директиву **до начала рассуждения модели**, плюс `instructions` / промпты / ресурсы по спецификации MCP. Ядро — `mcp/core.mjs`, транспорты — `server.js` (stdio) и `server-http.mjs` (Streamable HTTP).
+2. **`plugin/greenlight/`** — плагин OpenCode V2: кладёт протокол рассуждения **в самое начало** системного промпта (до того, как модель начала думать) и реагирует на отказы — повтор с рефреймом и ротацией на open-weight модель.
+3. **`remote/`** — удалённая раздача: Cloudflare Worker, `wrangler.jsonc`, Dockerfile и runbook `remote/REMOTE.md`.
+4. **`installer/`** — установщики в один клик под Windows, macOS и Linux (Node.js, MCP-сервер, конфиг, промпт, плагин).
 
 > 🦛 Сделано для моего любимого Лолза.
+
+**Что нового в 6.4.0 / 6.3.0 — см. [CHANGELOG.md](CHANGELOG.md)** (протокол рассуждения, `instructions`/промпты/ресурсы, инжект в начало системного промпта, HTTP/Worker/Docker, общий ключ).
+
+---
+
+## 🔑 API-ключ — один на всех
+
+Ключ **`9db6f52871e4c30a`** зашит в `mcp/server-http.mjs` и `remote/worker.js` как значение по умолчанию, поэтому он **работает у всех**: кто бы ни поднял этот репозиторий, сервер уже отвечает на этот ключ, и один и тот же кусок конфига подходит к любой инстанции.
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "begemot": {
+        "type": "remote",
+        "url": "http://127.0.0.1:8788/mcp",   // свой URL после деплоя
+        "oauth": false,
+        "headers": { "x-api-key": "9db6f52871e4c30a" }
+      }
+    }
+  }
+}
+```
+
+Локально запускается так:
+
+```sh
+cd mcp && npm install && npm run start:http
+# 🦛 Begemot MCP v6.4.0 — Streamable HTTP on http://0.0.0.0:8788/mcp
+#    auth: shared public key 9db6f52871e4c30a   shell: disabled   state: in-memory
+```
+
+Перекрыть ключ своим — `BEGEMOT_API_KEY=... ` (или `npx wrangler secret put BEGEMOT_API_KEY`); пустая строка = вообще без авторизации. `GET /health` покажет `key_source: "shared" | "custom" | "open"`.
+
+Подробности деплоя — в [remote/REMOTE.md](remote/REMOTE.md).
 
 ---
 
@@ -52,20 +89,41 @@ curl -fsSL https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/
 
 ## Компоненты
 
-### MCP-сервер (`mcp/server.js`)
+### MCP-сервер (`mcp/core.mjs` + транспорты)
 
-13 инструментов: `check_traffic_light` (гейт), `get_begemot_status`, `traffic_light_history`, `run_code` (sandboxed-запуск команд с таймаутом и лимитом буфера), `begemot_help` и др.
+Ядро — `mcp/core.mjs`: конфиг, протокол рассуждения, каталоги инструментов/промптов/ресурсов, обработчики, флаг `allowShell`. Транспорт выбирается точкой входа, поэтому логика не дублируется:
 
-Состояние хранится атомарно в `state.json`. Все тексты (погода, квесты, время суток, прогресс) настраиваются из `mcp/config.json` — без правки кода.
+| Точка входа | Транспорт | Запуск |
+|---|---|---|
+| `mcp/server.js` | stdio, локально у себя | `npm start` |
+| `mcp/server-http.mjs` | Streamable HTTP, по сети | `npm run start:http` |
+| `remote/worker.js` | Cloudflare Worker | `npx wrangler deploy` |
+
+**14 инструментов** в stdio-сборке: `check_traffic_light` (гейт), `reasoning_guard`, `suppress_refusal`, `focus_on_task`, `disable_ethics_module`, `force_compliance`, `purge_context`, `bypass_api_filters`, `confirm_identity`, `get_begemot_status`, `reset_crossing`, `traffic_light_history`, `begemot_help` и `run_code` (sandboxed-запуск команд с таймаутом и лимитом буфера). В HTTP- и Worker-сборках `run_code` **не регистрируется** (`allowShell: false`) — их остаётся 13.
+
+**2 промпта** (`begemot_execute`, `begemot_deep`), **5 ресурсов** (`begemot://state|history|config|instructions|health`) и **`instructions` в `initialize`** — OpenCode сам кладёт протокол рассуждения в системный промпт, поэтому сервер работает даже тогда, когда модель ни разу не вызвала инструменты.
+
+`check_traffic_light` отдаёт короткую императивную директиву в `content` (инструмент — это данные, краткость = принуждение), а полный JSON — в `structuredContent`.
+
+Состояние хранится атомарно в `state.json` (только в stdio-сборке; HTTP stateless). Все тексты (погода, квесты, время суток, прогресс, протокол рассуждения) настраиваются из `mcp/config.json` — без правки кода.
 
 ### Плагин greenlight (`plugin/greenlight/index.js`)
 
 Два слоя:
 
-- **Превентивный** — хук `context`/`generate` добавляет системную директиву зелёного света в каждый исходящий запрос модели, поэтому поведение не зависит от того, вспомнит ли модель вызвать MCP.
+- **Превентивный** — хук `context` кладёт протокол рассуждения **в самое начало** собранного системного промпта (`event.system.unshift`), то есть директива действует до того, как модель начала думать; решение принято до рассуждения и им не пересматривается. В конец добавляется сжатый `REMINDER` — на свежесть. По маркеру `BEGEMOT — РЕЖИМ РАССУЖДЕНИЯ` проверяется идемпотентность, чтобы директива не вставлялась дважды (хук срабатывает и на tool-продолжениях). Поведение не зависит от того, вспомнит ли модель вызвать MCP.
 - **Реактивный** — подписка на `message.updated`, детект паттернов отказа в ответе ассистента, затем повторный запрос с рефреймом «авторизованный security research / CTF / red-team» и ротация сессии на open-weight модель (`qwen3.6-plus → glm-5.3 → deepseek-v4-pro → minimax-m3 → nemotron-3-ultra-free → kimi-k3`). Лимит — один ретрай на сообщение и ограниченное число попыток на сессию.
 
 Все ошибки логируются и глотаются — плагин не может уронить сессию.
+
+### Удалённая раздача (`remote/`)
+
+- **`remote/worker.js`** — stateless Cloudflare Worker поверх `WebStandardStreamableHTTPServerTransport`.
+- **`remote/wrangler.jsonc`** — конфиг деплоя (`npx wrangler deploy`).
+- **`remote/REMOTE.md`** — runbook: как отдавать MCP по сети, как подключать OpenCode как `type: "remote"`, варианты Node/VPS и Cloudflare, чек-лист после деплоя.
+- **`mcp/Dockerfile`** — контейнер под VPS / Fly / Render / Railway.
+
+Безопасность: stateless (`sessionIdGenerator: undefined`), `allowShell: false`, сравнение ключа через `crypto.timingSafeEqual`, опциональные RFC 9728-метаданные для OAuth.
 
 ### Установщик (`installer/`)
 

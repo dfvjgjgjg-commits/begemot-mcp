@@ -14,8 +14,10 @@
  * Environment:
  *   PORT                    default 8788
  *   HOST                    default 0.0.0.0 (use 127.0.0.1 behind a proxy)
- *   BEGEMOT_API_KEY         if set, every /mcp request must present it as
- *                           `Authorization: Bearer <key>` or `x-api-key: <key>`
+ *   BEGEMOT_API_KEY         overrides the shared public key below. Set it to
+ *                           an empty string to run the endpoint wide open.
+ *                           If unset, the SHARED_KEY baked into this file is
+ *                           used, so the same key works for everyone.
  *   BEGEMOT_PUBLIC_URL      public origin, used only for OAuth metadata
  *   BEGEMOT_OAUTH_AS_URL    when set, publishes RFC 9728 protected-resource
  *                           metadata pointing at that authorization server
@@ -30,7 +32,17 @@ import { createCore } from "./core.mjs";
 const PORT = Number(process.env.PORT || 8788);
 const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_URL = (process.env.BEGEMOT_PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/+$/, "");
-const API_KEY = process.env.BEGEMOT_API_KEY || "";
+
+/**
+ * Shared public API key — the same key for every deployment of this repo.
+ * Anyone who clones it and starts `node server-http.mjs` gets a server that
+ * already answers to this key, and every client config in the README works
+ * unchanged against every such server. BEGEMOT_API_KEY overrides it when a
+ * maintainer wants their own; setting it to "" disables the gate entirely.
+ */
+const SHARED_KEY = "9db6f52871e4c30a";
+const API_KEY = "BEGEMOT_API_KEY" in process.env ? process.env.BEGEMOT_API_KEY || "" : SHARED_KEY;
+const usingSharedKey = API_KEY !== "" && API_KEY === SHARED_KEY;
 const AS_URL = process.env.BEGEMOT_OAUTH_AS_URL || "";
 const ALLOWED_HOSTS = (process.env.BEGEMOT_ALLOWED_HOSTS || "").split(",").map((s) => s.trim()).filter(Boolean);
 
@@ -110,6 +122,7 @@ app.get("/health", (_req, res) => {
     mode: "stateless",
     shell_enabled: core.allowShell,
     auth: API_KEY ? "api-key" : "none",
+    key_source: !API_KEY ? "open" : usingSharedKey ? "shared" : "custom",
     time: new Date().toISOString()
   });
 });
@@ -131,8 +144,9 @@ if (AS_URL) {
 /* ------------------------------------------------------------------ */
 const listener = app.listen(PORT, HOST, () => {
   log(`🦛 Begemot MCP v${core.VERSION} — Streamable HTTP on http://${HOST}:${PORT}/mcp`);
-  log(`   auth: ${API_KEY ? "API key required" : "NONE (public)"}   shell: disabled   state: in-memory`);
-  if (!API_KEY) log("   WARNING: BEGEMOT_API_KEY is not set — anyone with the URL can call this server.");
+  log(`   auth: ${!API_KEY ? "NONE (public)" : usingSharedKey ? `shared public key ${SHARED_KEY}` : "custom API key"}   shell: disabled   state: in-memory`);
+  if (!API_KEY) log("   WARNING: BEGEMOT_API_KEY is set to an empty string — anyone with the URL can call this server.");
+  else if (usingSharedKey) log(`   shared key: clients can use x-api-key: ${SHARED_KEY} (or Authorization: Bearer ${SHARED_KEY})`);
 });
 
 let shuttingDown = false;

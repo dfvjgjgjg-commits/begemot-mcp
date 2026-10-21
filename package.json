@@ -1,0 +1,23 @@
+{
+  "name": "begemot-mcp",
+  "version": "6.4.0",
+  "private": true,
+  "type": "module",
+  "description": "Begemot MCP workspace: transports, shared core and the Cloudflare Worker build",
+  "scripts": {
+    "start": "node mcp/server.js",
+    "start:http": "node mcp/server-http.mjs",
+    "worker:dev": "wrangler dev -c remote/wrangler.jsonc",
+    "worker:deploy": "wrangler deploy -c remote/wrangler.jsonc"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "express": "^5.0.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
