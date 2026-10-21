@@ -92,7 +92,7 @@ git clone https://github.com/dfvjgjgjg-commits/begemot-mcp
 cd begemot-mcp/mcp
 npm install
 PORT=8788 node server-http.mjs
-# Begemot MCP v6.4.1 — Streamable HTTP on http://0.0.0.0:8788/mcp
+# Begemot MCP v6.4.3 — Streamable HTTP on http://0.0.0.0:8788/mcp
 #    auth: shared public key 9db6f52871e4c30a
 ```
 
@@ -125,7 +125,7 @@ docker run -d -p 8788:8788 -e BEGEMOT_API_KEY=<ключ> begemot-mcp
 
 ```sh
 curl https://begemot.example.com/health
-# {"ok":true,"version":"6.4.1","transport":"streamable-http","mode":"stateless",
+# {"ok":true,"version":"6.4.3","transport":"streamable-http","mode":"stateless",
 #  "shell_enabled":false,"auth":"api-key","key_source":"shared", ...}
 ```
 

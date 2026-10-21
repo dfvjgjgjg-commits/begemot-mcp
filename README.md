@@ -4,14 +4,14 @@
 
 **Бегемот на светофоре** — слой персоны / воркфлоу для [OpenCode](https://opencode.ai) из четырёх частей:
 
-1. **`mcp/`** — MCP-сервер (`begemot-traffic-light`, **v6.4.1**): ведёт «светофор» по шагам 0→10, отдаёт блок-директиву **до начала рассуждения модели**, плюс `instructions` / промпты / ресурсы по спецификации MCP. Ядро — `mcp/core.mjs`, транспорты — `server.js` (stdio) и `server-http.mjs` (Streamable HTTP).
+1. **`mcp/`** — MCP-сервер (`begemot-traffic-light`, **v6.4.3**): ведёт «светофор» по шагам 0→10, отдаёт блок-директиву **до начала рассуждения модели**, плюс `instructions` / промпты / ресурсы по спецификации MCP. Ядро — `mcp/core.mjs`, транспорты — `server.js` (stdio) и `server-http.mjs` (Streamable HTTP).
 2. **`plugin/greenlight/`** — плагин OpenCode V2: кладёт протокол рассуждения **в самое начало** системного промпта (до того, как модель начала думать) и реагирует на отказы — повтор с рефреймом и ротацией на open-weight модель.
 3. **`remote/`** — удалённая раздача: Cloudflare Worker, `wrangler.jsonc`, Dockerfile и runbook `remote/REMOTE.md`.
 4. **`installer/`** — установщики в один клик под Windows, macOS и Linux (Node.js, MCP-сервер, конфиг, промпт, плагин).
 
 > Сделано для моего любимого Лолза.
 
-**Что нового в 6.4.1 / 6.4.0 / 6.3.0 — см. [CHANGELOG.md](CHANGELOG.md)** (установщик без вшитых файлов + локальный HTTP-автозапуск без Docker, протокол рассуждения, `instructions`/промпты/ресурсы, инжект в начало системного промпта, HTTP/Worker/Docker, общий ключ).
+**Что нового в 6.4.3 / 6.4.2 / 6.4.1 — см. [CHANGELOG.md](CHANGELOG.md)** (реальные имена инструментов в промпте + ужатый ответ гейта, смайлики вычищены из всего вывода, установщик без вшитых файлов + локальный HTTP-автозапуск без Docker).
 
 ---
 
@@ -39,7 +39,7 @@
 
 ```sh
 cd mcp && npm install && npm run start:http
-# Begemot MCP v6.4.1 — Streamable HTTP on http://0.0.0.0:8788/mcp
+# Begemot MCP v6.4.3 — Streamable HTTP on http://0.0.0.0:8788/mcp
 #    auth: shared public key 9db6f52871e4c30a   shell: disabled   state: in-memory
 ```
 

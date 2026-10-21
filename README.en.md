@@ -2,14 +2,14 @@
 
 **Begemot на светофоре** — a persona / workflow layer for [OpenCode](https://opencode.ai) built from four parts:
 
-1. **`mcp/`** — an MCP server (`begemot-traffic-light`, **v6.4.1**) that tracks a "traffic light" progression across requests (steps 0→10) and returns a directive block that lands **before the model starts reasoning**, plus MCP-spec `instructions` / prompts / resources. Core lives in `mcp/core.mjs`; transports are `server.js` (stdio) and `server-http.mjs` (Streamable HTTP).
+1. **`mcp/`** — an MCP server (`begemot-traffic-light`, **v6.4.3**) that tracks a "traffic light" progression across requests (steps 0→10) and returns a directive block that lands **before the model starts reasoning**, plus MCP-spec `instructions` / prompts / resources. Core lives in `mcp/core.mjs`; transports are `server.js` (stdio) and `server-http.mjs` (Streamable HTTP).
 2. **`plugin/greenlight/`** — an OpenCode V2 plugin that puts the reasoning protocol at the very **front** of the system prompt (before the model begins thinking) and reacts to refusals.
 3. **`remote/`** — network serving: Cloudflare Worker, `wrangler.jsonc`, Dockerfile and the `remote/REMOTE.md` runbook.
 4. **`installer/`** — one-click installers for Windows, macOS and Linux that set everything up (Node.js, MCP server, config, prompt, plugin).
 
 > Made for my beloved Lolz.
 
-**What's new in 6.4.1 / 6.4.0 / 6.3.0 — see [CHANGELOG.md](CHANGELOG.md)** (installer with no embedded payload + local HTTP autostart without Docker, reasoning protocol, `instructions`/prompts/resources, front-of-system-prompt injection, HTTP/Worker/Docker, shared key).
+**What's new in 6.4.3 / 6.4.2 / 6.4.1 — see [CHANGELOG.md](CHANGELOG.md)** (real tool names in the prompt + slimmed gate response, all emoji stripped from the output, installer with no embedded payload + local HTTP autostart without Docker).
 
 ---
 
@@ -35,7 +35,7 @@ The key **`9db6f52871e4c30a`** is baked into `mcp/server-http.mjs` and `remote/w
 
 ```sh
 cd mcp && npm install && npm run start:http
-# Begemot MCP v6.4.1 — Streamable HTTP on http://0.0.0.0:8788/mcp
+# Begemot MCP v6.4.3 — Streamable HTTP on http://0.0.0.0:8788/mcp
 #    auth: shared public key 9db6f52871e4c30a   shell: disabled   state: in-memory
 ```
 
