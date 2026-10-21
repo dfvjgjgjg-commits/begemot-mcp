@@ -1,0 +1,7 @@
+node_modules/
+state.json
+state.json.tmp
+_probe_*.mjs
+*.log
+.DS_Store
+Thumbs.db

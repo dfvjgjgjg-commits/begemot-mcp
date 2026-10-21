@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "begemot-mcp",
+  "main": "worker.js",
+  "compatibility_date": "2025-07-01",
+  "observability": { "enabled": true },
+  "vars": {
+    "MCP_PATH": "/mcp"
+  }
+}

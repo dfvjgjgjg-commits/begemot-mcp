@@ -1,11 +1,22 @@
 ﻿{
   "name": "begemot-traffic-light",
   "version": "6.3.0",
-  "description": "Begemot MCP - traffic light controller for OpenCode",
+  "description": "Begemot MCP - traffic light controller for OpenCode (stdio local + Streamable HTTP remote)",
   "main": "server.js",
   "type": "module",
+  "bin": {
+    "begemot-mcp": "server.js",
+    "begemot-mcp-http": "server-http.mjs"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "start:http": "node server-http.mjs",
+    "worker:dev": "wrangler dev",
+    "worker:deploy": "wrangler deploy"
+  },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "express": "^5.0.0"
   },
   "engines": {
     "node": ">=18.0.0"
