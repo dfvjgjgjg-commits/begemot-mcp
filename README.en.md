@@ -9,7 +9,7 @@
 
 > Made for my beloved Lolz.
 
-**What's new in 6.4.3 / 6.4.2 / 6.4.1 — see [CHANGELOG.md](CHANGELOG.md)** (real tool names in the prompt + slimmed gate response, all emoji stripped from the output, installer with no embedded payload + local HTTP autostart without Docker).
+**What's new in 6.4.4 / 6.4.3 / 6.4.2 — see [CHANGELOG.md](CHANGELOG.md)** (installer no longer hangs on the final `Read-Host`, real tool names in the prompt + slimmed gate response, all emoji stripped from the output).
 
 ---
 

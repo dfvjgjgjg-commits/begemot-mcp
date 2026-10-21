@@ -43,7 +43,18 @@ function Step($n, $t) { Write-Host ""; Write-Host "[$n/$STEPS_TOTAL] $t" -Foregr
 function Ok($m)   { Write-Host "  OK: $m" -ForegroundColor Green }
 function Warn($m) { Write-Host "  WARN: $m" -ForegroundColor Yellow }
 function Err($m)  { Write-Host "  ERROR: $m" -ForegroundColor Red }
-function Die($m)  { Err $m; Read-Host "Press Enter to close"; exit 1 }
+function Pause() {
+    # Wait for a key only when a human is actually sitting at the console.
+    # With a redirected stdin (CI, scheduled task, non-interactive host,
+    # "irm ... | iex" from a service) Read-Host blocks forever and leaves the
+    # installer running, holding its log file open.
+    try {
+        if ([Console]::IsInputRedirected) { return }
+        if (-not [Environment]::UserInteractive) { return }
+    } catch { return }
+    Read-Host "Press Enter to close"
+}
+function Die($m)  { Err $m; Pause; exit 1 }
 
 Banner
 
@@ -389,4 +400,4 @@ Write-Host "  Unregister-ScheduledTask -TaskName '$TaskName' -Confirm:`$false" -
 Write-Host ""
 Write-Host "  Open a new chat in OpenCode. Begemot is active." -ForegroundColor Cyan
 Write-Host ""
-Read-Host "Press Enter to close"
+Pause

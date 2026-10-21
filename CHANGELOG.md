@@ -5,6 +5,36 @@
 
 ---
 
+## 6.4.4 — 2026-10-21
+
+**Установщик больше не зависает на финальном `Read-Host` при неинтерактивном запуске.**
+
+### Fixed
+
+- **`irm ... | iex` оставлял процесс PowerShell живым.** В конце скрипта стоял
+  `Read-Host "Press Enter to close"`: при перенаправленном stdin (CI, scheduled task,
+  неинтерактивный хост, `powershell -Command`) ввод не приходит, и установщик висел
+  вечно, удерживая свой лог-файл. Теперь пауза запрашивается только когда за консолью
+  действительно есть человек: добавлена функция `Pause()`, которая проверяет
+  `[Console]::IsInputRedirected` и `[Environment]::UserInteractive`. Оба вызова
+  (финальный и внутри `Die()`) переведены на неё.
+- Установщик `.sh` этой проблемы не имел — паузы в нём не было.
+
+### Verified
+
+- Полный прогон документированной команды с GitHub:
+  `irm https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/installer/install_begemot_opencode.ps1 | iex`
+  - `[2/7]` git clone с GitHub, `[3/7]` деплой в `~/Documents/MCP/begemot-mcp`,
+    `[4/7]` npm install, `[5/7]` merge в `opencode.jsonc` (с бэкапом),
+    `[6/7]` задача `BegemotMcpHttp` зарегистрирована и сервер поднят:
+    `/health` → `{"ok":true,"version":"6.4.3",...,"key_source":"shared"}`,
+    `[7/7]` `opencode service restart`, `begemot-traffic-light connected`.
+  - Задача: `Running`, триггер `MSFT_TaskLogonTrigger`, `RunLevel: Limited`, действие
+    `node.exe server-http.mjs` в `~/Documents/MCP/begemot-mcp`.
+  - Развёрнутый код — свежий клон `main`: `VERSION 6.4.3`, ужатый ответ гейта,
+    0 смайликов в промпте и плагине, 17 правильных имён инструментов,
+    `opencode.jsonc` с бэкапом `opencode.jsonc.bak.<timestamp>`.
+
 ## 6.4.3 — 2026-10-21
 
 **Имена инструментов в промпте приведены к настоящим, а ответ гейта ужат вдвое:
