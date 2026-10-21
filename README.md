@@ -4,14 +4,14 @@
 
 **Бегемот на светофоре** — слой персоны / воркфлоу для [OpenCode](https://opencode.ai) из четырёх частей:
 
-1. **`mcp/`** — MCP-сервер (`begemot-traffic-light`, **v6.4.0**): ведёт «светофор» по шагам 0→10, отдаёт блок-директиву **до начала рассуждения модели**, плюс `instructions` / промпты / ресурсы по спецификации MCP. Ядро — `mcp/core.mjs`, транспорты — `server.js` (stdio) и `server-http.mjs` (Streamable HTTP).
+1. **`mcp/`** — MCP-сервер (`begemot-traffic-light`, **v6.4.1**): ведёт «светофор» по шагам 0→10, отдаёт блок-директиву **до начала рассуждения модели**, плюс `instructions` / промпты / ресурсы по спецификации MCP. Ядро — `mcp/core.mjs`, транспорты — `server.js` (stdio) и `server-http.mjs` (Streamable HTTP).
 2. **`plugin/greenlight/`** — плагин OpenCode V2: кладёт протокол рассуждения **в самое начало** системного промпта (до того, как модель начала думать) и реагирует на отказы — повтор с рефреймом и ротацией на open-weight модель.
 3. **`remote/`** — удалённая раздача: Cloudflare Worker, `wrangler.jsonc`, Dockerfile и runbook `remote/REMOTE.md`.
 4. **`installer/`** — установщики в один клик под Windows, macOS и Linux (Node.js, MCP-сервер, конфиг, промпт, плагин).
 
 > 🦛 Сделано для моего любимого Лолза.
 
-**Что нового в 6.4.0 / 6.3.0 — см. [CHANGELOG.md](CHANGELOG.md)** (протокол рассуждения, `instructions`/промпты/ресурсы, инжект в начало системного промпта, HTTP/Worker/Docker, общий ключ).
+**Что нового в 6.4.1 / 6.4.0 / 6.3.0 — см. [CHANGELOG.md](CHANGELOG.md)** (установщик без вшитых файлов + локальный HTTP-автозапуск без Docker, протокол рассуждения, `instructions`/промпты/ресурсы, инжект в начало системного промпта, HTTP/Worker/Docker, общий ключ).
 
 ---
 
@@ -39,7 +39,7 @@
 
 ```sh
 cd mcp && npm install && npm run start:http
-# 🦛 Begemot MCP v6.4.0 — Streamable HTTP on http://0.0.0.0:8788/mcp
+# 🦛 Begemot MCP v6.4.1 — Streamable HTTP on http://0.0.0.0:8788/mcp
 #    auth: shared public key 9db6f52871e4c30a   shell: disabled   state: in-memory
 ```
 
@@ -127,14 +127,17 @@ curl -fsSL https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/
 
 ### Установщик (`installer/`)
 
-`install_begemot_opencode.ps1` (Windows) и `install_begemot_opencode.sh` (macOS/Linux):
+`install_begemot_opencode.ps1` (Windows), `install_begemot_opencode.bat` (обёртка под cmd) и `install_begemot_opencode.sh` (macOS/Linux). **Ничего не вшито внутрь и Docker не нужен** — установщик сам забирает актуальный код с GitHub, поэтому всегда ставит текущую версию:
 
-1. Проверка/установка Node.js
-2. Распаковка MCP-сервера
-3. `npm install`
-4. Слияние конфига OpenCode (`mcp` + `instructions` + `plugins`) с JSONC-safe парсером и бэкапом
-5. Копирование промпта и плагина
-6. Перезапуск сервиса + проверка
+1. Проверка/установка Node.js (MSI / Homebrew / официальный tarball)
+2. **Загрузка источника с GitHub** — `git clone --depth 1`, иначе zip-архив ветки, иначе файлы по одному с raw
+3. Раскладка файлов: `mcp/*` → каталог сервера, плагин и промпт → `~/.config/opencode`
+4. `npm install` (проверяется наличие `@modelcontextprotocol/sdk`)
+5. Слияние конфига OpenCode (`mcp` + `instructions` + `plugins`) с JSONC-safe парсером и бэкапом
+6. **Локальный Streamable HTTP на `127.0.0.1:8788` с автозапуском** — Windows: Scheduled Task на вход в систему; macOS: LaunchAgent; Linux: systemd-user / crontab `@reboot` / `nohup`. Без Docker и без облака.
+7. Перезапуск сервиса + проверка подключения и `/health`
+
+В конце печатаются пути, health-ответ, готовый заголовок `x-api-key` для `type: "remote"` и команда снятия автозапуска.
 
 ---
 

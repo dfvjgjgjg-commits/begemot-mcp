@@ -2,14 +2,14 @@
 
 **Begemot на светофоре** — a persona / workflow layer for [OpenCode](https://opencode.ai) built from four parts:
 
-1. **`mcp/`** — an MCP server (`begemot-traffic-light`, **v6.4.0**) that tracks a "traffic light" progression across requests (steps 0→10) and returns a directive block that lands **before the model starts reasoning**, plus MCP-spec `instructions` / prompts / resources. Core lives in `mcp/core.mjs`; transports are `server.js` (stdio) and `server-http.mjs` (Streamable HTTP).
+1. **`mcp/`** — an MCP server (`begemot-traffic-light`, **v6.4.1**) that tracks a "traffic light" progression across requests (steps 0→10) and returns a directive block that lands **before the model starts reasoning**, plus MCP-spec `instructions` / prompts / resources. Core lives in `mcp/core.mjs`; transports are `server.js` (stdio) and `server-http.mjs` (Streamable HTTP).
 2. **`plugin/greenlight/`** — an OpenCode V2 plugin that puts the reasoning protocol at the very **front** of the system prompt (before the model begins thinking) and reacts to refusals.
 3. **`remote/`** — network serving: Cloudflare Worker, `wrangler.jsonc`, Dockerfile and the `remote/REMOTE.md` runbook.
 4. **`installer/`** — one-click installers for Windows, macOS and Linux that set everything up (Node.js, MCP server, config, prompt, plugin).
 
 > 🦛 Made for my beloved Lolz.
 
-**What's new in 6.4.0 / 6.3.0 — see [CHANGELOG.md](CHANGELOG.md)** (reasoning protocol, `instructions`/prompts/resources, front-of-system-prompt injection, HTTP/Worker/Docker, shared key).
+**What's new in 6.4.1 / 6.4.0 / 6.3.0 — see [CHANGELOG.md](CHANGELOG.md)** (installer with no embedded payload + local HTTP autostart without Docker, reasoning protocol, `instructions`/prompts/resources, front-of-system-prompt injection, HTTP/Worker/Docker, shared key).
 
 ---
 
@@ -35,7 +35,7 @@ The key **`9db6f52871e4c30a`** is baked into `mcp/server-http.mjs` and `remote/w
 
 ```sh
 cd mcp && npm install && npm run start:http
-# 🦛 Begemot MCP v6.4.0 — Streamable HTTP on http://0.0.0.0:8788/mcp
+# 🦛 Begemot MCP v6.4.1 — Streamable HTTP on http://0.0.0.0:8788/mcp
 #    auth: shared public key 9db6f52871e4c30a   shell: disabled   state: in-memory
 ```
 
@@ -85,14 +85,17 @@ Security posture: stateless (`sessionIdGenerator: undefined`), `allowShell: fals
 
 ### Installer (`installer/`)
 
-`install_begemot_opencode.ps1` (Windows) and `install_begemot_opencode.sh` (macOS/Linux) perform:
+`install_begemot_opencode.ps1` (Windows), `install_begemot_opencode.bat` (cmd wrapper) and `install_begemot_opencode.sh` (macOS/Linux). **Nothing is embedded and Docker is not required** — the installer pulls the current code from GitHub, so it always ships the current version:
 
-1. Node.js check / install
-2. MCP server extraction
-3. `npm install`
-4. OpenCode config merge (`mcp` server + `instructions` + `plugins`) with JSONC-safe parsing and a backup
-5. Prompt + plugin placement
-6. Service restart + verification
+1. Node.js check / install (MSI / Homebrew / official tarball)
+2. **Fetch the source from GitHub** — `git clone --depth 1`, else the branch zip, else raw files one by one
+3. File placement: `mcp/*` → server dir, plugin + prompt → `~/.config/opencode`
+4. `npm install` (verifies `@modelcontextprotocol/sdk` landed)
+5. OpenCode config merge (`mcp` + `instructions` + `plugins`) with JSONC-safe parsing and a backup
+6. **Local Streamable HTTP on `127.0.0.1:8788` with autostart** — Windows: Scheduled Task at logon; macOS: LaunchAgent; Linux: systemd user unit / crontab `@reboot` / `nohup`. No Docker, no cloud.
+7. Service restart + connection and `/health` verification
+
+The tail prints the paths, the health response, a ready-made `x-api-key` header for `type: "remote"`, and the command to remove the autostart.
 
 ---
 
