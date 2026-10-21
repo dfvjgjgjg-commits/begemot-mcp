@@ -34,9 +34,12 @@ import { join } from "path";
 const NAME = "begemot-traffic-light";
 const CONFIG_FILES = ["opencode.jsonc", "opencode.json"];
 
-/* ------------------------------------------------------------------ scanner */
+/* ------------------------------------------------------------------ scanner
+   Exported so that unmerge-opencode-config.mjs (the uninstall side) walks the
+   same scanner - two different parsers over one file is how you end up with
+   two different opinions about where a value ends. */
 
-function skipString(s, i) {
+export function skipString(s, i) {
   let j = i + 1;
   while (j < s.length) {
     const c = s[j];
@@ -47,7 +50,7 @@ function skipString(s, i) {
   throw new Error("unterminated string at offset " + i);
 }
 
-function skipTrivia(s, i) {
+export function skipTrivia(s, i) {
   for (;;) {
     while (i < s.length && /\s/.test(s[i])) i++;
     if (s[i] === "/" && s[i + 1] === "/") { while (i < s.length && s[i] !== "\n") i++; continue; }
@@ -60,7 +63,7 @@ function skipTrivia(s, i) {
   }
 }
 
-function skipContainer(s, i) {
+export function skipContainer(s, i) {
   const open = s[i];
   const close = open === "{" ? "}" : "]";
   let depth = 0;
@@ -77,7 +80,7 @@ function skipContainer(s, i) {
   throw new Error("unterminated container at offset " + i);
 }
 
-function skipValue(s, i) {
+export function skipValue(s, i) {
   const c = s[i];
   if (c === '"') return skipString(s, i);
   if (c === "{" || c === "[") return skipContainer(s, i);
@@ -86,7 +89,7 @@ function skipValue(s, i) {
   return j;
 }
 
-function scanObject(s, open) {
+export function scanObject(s, open) {
   const end = skipContainer(s, open);
   const props = [];
   let i = open + 1;
@@ -109,7 +112,7 @@ function scanObject(s, open) {
   return { props, end };
 }
 
-function scanArray(s, open) {
+export function scanArray(s, open) {
   const end = skipContainer(s, open);
   const items = [];
   let i = open + 1;
@@ -128,7 +131,7 @@ function scanArray(s, open) {
 
 /* ------------------------------------------------------------------ helpers */
 
-function lineIndent(s, pos) {
+export function lineIndent(s, pos) {
   const ls = s.lastIndexOf("\n", pos) + 1;
   let i = ls;
   while (i < s.length && (s[i] === " " || s[i] === "\t")) i++;
@@ -143,7 +146,7 @@ function pretty(value, indent) {
     .join("\n");
 }
 
-function applyOps(text, ops) {
+export function applyOps(text, ops) {
   const groups = new Map();
   for (const op of ops) {
     const key = op.start + ":" + op.end;
@@ -152,13 +155,23 @@ function applyOps(text, ops) {
   }
   let out = text;
   for (const g of [...groups.values()].sort((a, b) => b.start - a.start)) {
-    // several keys can land on the same spot (freshly created object): they
-    // must be separated by a comma, otherwise the result is not valid JSON
+    // Several keys can land on the same spot (a freshly created object, or a
+    // file missing several top-level keys at once). They must come out
+    // comma-separated or the file stops being valid JSON, but the comma belongs
+    // right after the value - not after the indentation that follows it.
+    // The last part keeps whatever terminator it already carries: a trailing
+    // comma in it means the original object had members after our insertion.
+    // Removal ops arrive with an empty text and must contribute nothing.
+    const parts = g.parts
+      .map((t) => t ?? "")
+      .filter((t) => t !== "");
     let merged = "";
-    for (let i = 0; i < g.parts.length; i++) {
-      let t = g.parts[i];
-      if (i < g.parts.length - 1 && !/,\s*$/.test(t)) t += ",";
-      merged += t;
+    for (let i = 0; i < parts.length; i++) {
+      const lead = (parts[i].match(/^\s*/) || [""])[0];
+      const body = parts[i].slice(lead.length).replace(/\s+$/, "");
+      const isLast = i === parts.length - 1;
+      const terminator = isLast ? "" : (/,$/.test(body) ? "" : ",");
+      merged += lead + body + terminator;
     }
     out = out.slice(0, g.start) + merged + out.slice(g.end);
   }
@@ -277,36 +290,43 @@ function mergeFile(path, opts) {
   return { path, created, shape: usedShape, changed: out !== text || created, notes };
 }
 
-/* ------------------------------------------------------------------- main */
+/* ------------------------------------------------------------------- main
+   Guarded: unmerge-opencode-config.mjs imports the scanner from here, and an
+   import must not run the CLI. */
 
-const [configDir, promptPath, mcpDir, nodeExe, pluginPath, shapeArg] = process.argv.slice(2);
-if (!configDir || !promptPath || !mcpDir || !nodeExe) {
-  console.error("usage: merge-opencode-config.mjs <configDir> <promptPath> <mcpDir> <nodeExe> <pluginPath> [shape]");
-  process.exit(64);
-}
-const shape = shapeArg || "auto";
+const isMain = !!process.argv[1] &&
+  process.argv[1].replace(/\\/g, "/").split("/").pop() === "merge-opencode-config.mjs";
 
-const serverCfg = {
-  type: "local",
-  command: [nodeExe, join(mcpDir, "server.js")],
-  codemode: false,
-};
-
-const existing = CONFIG_FILES.map((f) => join(configDir, f)).filter((p) => existsSync(p));
-const targets = existing.length ? existing : [join(configDir, "opencode.jsonc")];
-
-let failed = 0;
-for (const t of targets) {
-  try {
-    const res = mergeFile(t, { promptPath, pluginPath, serverCfg, shape });
-    console.log(
-      "merged " + (res.created ? "(created)" : res.changed ? "(updated)" : "(already ok)") +
-      " shape=" + res.shape + " -> " + res.path
-    );
-    for (const n of res.notes) console.log("  note: " + n);
-  } catch (e) {
-    failed++;
-    console.error("FAILED " + t + ": " + e.message);
+if (isMain) {
+  const [configDir, promptPath, mcpDir, nodeExe, pluginPath, shapeArg] = process.argv.slice(2);
+  if (!configDir || !promptPath || !mcpDir || !nodeExe) {
+    console.error("usage: merge-opencode-config.mjs <configDir> <promptPath> <mcpDir> <nodeExe> <pluginPath> [shape]");
+    process.exit(64);
   }
+  const shape = shapeArg || "auto";
+
+  const serverCfg = {
+    type: "local",
+    command: [nodeExe, join(mcpDir, "server.js")],
+    codemode: false,
+  };
+
+  const existing = CONFIG_FILES.map((f) => join(configDir, f)).filter((p) => existsSync(p));
+  const targets = existing.length ? existing : [join(configDir, "opencode.jsonc")];
+
+  let failed = 0;
+  for (const t of targets) {
+    try {
+      const res = mergeFile(t, { promptPath, pluginPath, serverCfg, shape });
+      console.log(
+        "merged " + (res.created ? "(created)" : res.changed ? "(updated)" : "(already ok)") +
+        " shape=" + res.shape + " -> " + res.path
+      );
+      for (const n of res.notes) console.log("  note: " + n);
+    } catch (e) {
+      failed++;
+      console.error("FAILED " + t + ": " + e.message);
+    }
+  }
+  process.exit(failed ? 1 : 0);
 }
-process.exit(failed ? 1 : 0);

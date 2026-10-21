@@ -140,6 +140,37 @@ curl -fsSL https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/
 
 В конце печатаются пути, health-ответ, готовый заголовок `x-api-key` для `type: "remote"` и команда снятия автозапуска.
 
+### Удаление (`installer/uninstall_begemot_opencode.*`)
+
+Установка умеет убирать себя целиком. Деинсталлятор выполняется в том же порядке,
+в каком устанавливалось, и в конце сверяет результат:
+
+```powershell
+# Windows
+irm https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/installer/uninstall_begemot_opencode.ps1 | iex
+```
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/installer/uninstall_begemot_opencode.sh | bash
+```
+
+Что снимается: процесс сервера, автозапуск (Scheduled Task / LaunchAgent / systemd
+`--user` / строка crontab), наши записи в `opencode.json` и `opencode.jsonc`,
+промпт, плагин `greenlight` и развёрнутое дерево сервера. Затем сервис OpenCode
+перезапускается, чтобы перечитать конфиг.
+
+Что **не** трогается: ваши серверы, правила, плагины и комментарии в конфиге —
+правка идёт текстово, тем же модулем, что и установка (`merge` /
+`unmerge-opencode-config.mjs`, общий сканер). Резервные копии `opencode.json*.bak.*`
+сохраняются; `-PurgeBackups` (Windows) или `PURGE_BACKUPS=1` (macOS/Linux) удаляет
+и их, `-KeepServerDir` / `KEEP_SERVER_DIR=1` оставляет дерево сервера.
+
+Последний шаг — проверка: `UNINSTALL COMPLETE - nothing left behind` печатается,
+только если не осталось ничего. Оставшееся перечисляется строками `WARN`.
+Скрипт идемпотентен: на машине, где ничего не установлено, он просто пишет
+`nothing of Begemot is installed` и выходит с кодом 0.
+
 ---
 
 ## Если не работает

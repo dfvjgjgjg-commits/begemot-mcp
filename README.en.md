@@ -98,6 +98,37 @@ Security posture: stateless (`sessionIdGenerator: undefined`), `allowShell: fals
 
 The tail prints the paths, the health response, a ready-made `x-api-key` header for `type: "remote"`, and the command to remove the autostart.
 
+### Uninstalling (`installer/uninstall_begemot_opencode.*`)
+
+The install can take itself back apart. The uninstaller runs in the reverse order
+of the installer and verifies the result at the end:
+
+```powershell
+# Windows
+irm https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/installer/uninstall_begemot_opencode.ps1 | iex
+```
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/dfvjgjgjg-commits/begemot-mcp/main/installer/uninstall_begemot_opencode.sh | bash
+```
+
+What it removes: the server process, the autostart (Scheduled Task / LaunchAgent /
+systemd user unit / crontab line), our entries from `opencode.json` and
+`opencode.jsonc`, the prompt, the `greenlight` plugin and the deployed server
+tree. It then restarts the OpenCode service so the config is reloaded.
+
+What it leaves alone: your own servers, rules, plugins and comments — the config
+is edited as text by the same module the installer uses (`merge` /
+`unmerge-opencode-config.mjs`, one shared scanner). The `opencode.json*.bak.*`
+backups are kept; `-PurgeBackups` (Windows) or `PURGE_BACKUPS=1` (macOS/Linux)
+deletes them too, `-KeepServerDir` / `KEEP_SERVER_DIR=1` keeps the server tree.
+
+The last step is a verification pass: `UNINSTALL COMPLETE - nothing left behind`
+is printed only when nothing is left, and anything remaining is listed as `WARN`
+lines. The script is idempotent — on a machine with nothing installed it just
+prints `nothing of Begemot is installed` and exits 0.
+
 ---
 
 ## If it does not work

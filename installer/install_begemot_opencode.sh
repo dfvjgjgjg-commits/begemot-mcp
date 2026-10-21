@@ -154,10 +154,12 @@ fi
 [ -f "$MCP_DIR/server-http.mjs" ] || warn "server-http.mjs missing - local HTTP endpoint will not start"
 ok "files deployed (core.mjs, server.js, config.json, plugin, prompt)"
 
-# the merge module and the doctor travel with the install: both installers
-# share the exact same logic, and the doctor is what proves the install works
+# the merge module, the removal module and the doctor travel with the install:
+# both installers share the exact same logic, the doctor is what proves the
+# install works, and the removal module is what lets the uninstaller clean the
+# config without fetching anything
 mkdir -p "$MCP_DIR/installer"
-for f in merge-opencode-config.mjs doctor.mjs; do
+for f in merge-opencode-config.mjs unmerge-opencode-config.mjs doctor.mjs; do
     if [ -f "$SRC_DIR/installer/$f" ]; then
         cp "$SRC_DIR/installer/$f" "$MCP_DIR/installer/$f"
     elif ! [ -f "$MCP_DIR/installer/$f" ]; then
