@@ -52,7 +52,7 @@ import { appendFileSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PLUGIN_VERSION = "1.1.0";
+const PLUGIN_VERSION = "1.2.0";
 
 /* Marker used to detect an already-injected directive (idempotency guard). */
 const MARK = "BEGEMOT — РЕЖИМ РАССУЖДЕНИЯ";
@@ -213,6 +213,22 @@ function extractText(part) {
   return "";
 }
 
+/**
+ * Thinking / reasoning parts: the model's raw thought stream. Providers shape
+ * these differently ("thinking" or "reasoning" type, text in .thinking or
+ * .text), so accept any of those and skip everything else (tools, text).
+ */
+function extractReasoning(part) {
+  if (!part) return "";
+  if (typeof part === "string") return "";
+  if (Array.isArray(part)) return part.map(extractReasoning).join("");
+  const type = part.type;
+  if (typeof type === "string" && type !== "thinking" && type !== "reasoning") return "";
+  if (typeof part.thinking === "string") return part.thinking;
+  if (typeof part.text === "string") return part.text;
+  return "";
+}
+
 function partHasMarker(p) {
   if (typeof p === "string") return p.includes(MARK);
   return !!(p && typeof p.text === "string" && p.text.includes(MARK));
@@ -333,7 +349,14 @@ function readOptions(ctx) {
     rotation: o.rotation !== false,
     retryWindowMs: num(o.retryWindowMs, 600000),
     retryDelayMs: num(o.retryDelayMs, 750),
-    logFile: typeof o.logFile === "string" ? o.logFile : ""
+    logFile: typeof o.logFile === "string" ? o.logFile : "",
+    // Thoughts feed: stream the model's thinking to the begemot server, where
+    // it shows up live at /thoughts.html. Same shared key as everything else.
+    thoughts: o.thoughts !== false,
+    thoughtsUrl: typeof o.thoughtsUrl === "string" && o.thoughtsUrl
+      ? o.thoughtsUrl
+      : "http://127.0.0.1:8788/thoughts",
+    thoughtsKey: typeof o.thoughtsKey === "string" ? o.thoughtsKey : "9db6f52871e4c30a"
   };
 }
 
@@ -349,45 +372,65 @@ function resolveRotation(models) {
   return kept;
 }
 
-async function onEvent(ctx, event, state) {
-  if (!event || event.type !== "message.updated") return;
-  const props = event.properties || {};
-  const info = props.info || props.message || {};
-  if (!info || !info.role) return;
-  const sessionID = info.sessionID;
-  if (!sessionID) return;
+/* --- thoughts feed to the begemot server ------------------------------------ */
 
-  // A new user turn is a fresh chance: clear that session's retry budget.
-  if (info.role === "user") {
-    const s0 = state.sessions.get(sessionID);
-    if (s0 && s0.retries) {
-      s0.retries = 0;
-      log("retry budget reset (new user turn) " + sessionID);
+/**
+ * Fire-and-forget POST of thought records to the server's /thoughts endpoint.
+ * Batched: entries sit in a queue and flush every 400 ms or at 50 records, so
+ * a fast stream costs one request per few hundred ms instead of one per chunk.
+ * Any failure is swallowed after one log line - the thoughts feed must never
+ * be able to break the session or the retry layer.
+ */
+function makeThoughtForwarder(opts) {
+  if (!opts.thoughts) return { push() {}, flush() {}, close() {} };
+  const queue = [];
+  let timer = null;
+  let warned = false;
+
+  async function send(batch) {
+    try {
+      const res = await fetch(opts.thoughtsUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": opts.thoughtsKey
+        },
+        body: JSON.stringify({ sessionID: batch[0].sessionID, thoughts: batch }),
+        signal: AbortSignal.timeout(3000)
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      if (warned) { warned = false; log("thoughts feed recovered -> " + opts.thoughtsUrl); }
+    } catch (e) {
+      if (!warned) {
+        warned = true;
+        log("thoughts feed unavailable (" + ((e && e.message) || e) + ") -> " + opts.thoughtsUrl + " (throttled until it recovers)");
+      }
     }
-    return;
-  }
-  if (info.role !== "assistant") return;
-
-  const chunk = extractText(props.part || {});
-  if (!chunk) return;
-
-  // Buffer the whole reply so a refusal split across streamed chunks is caught.
-  // Joined WITHOUT a separator: chunks are consecutive slices of one stream.
-  const key = sessionID + ":" + (info.id || "unknown");
-  let buf = state.buf.get(key);
-  if (buf === undefined) buf = "";
-  buf = (buf + chunk).slice(-30000);
-  state.buf.set(key, buf);
-  if (state.buf.size > 300) {
-    const oldest = state.buf.keys().next().value;
-    state.buf.delete(oldest);
   }
 
-  const hit = classify(buf);
-  if (!hit) return;
+  function flush() {
+    timer = null;
+    while (queue.length) {
+      const batch = queue.splice(0, 50);
+      void send(batch);
+    }
+  }
 
-  const msgID = info.id || key;
-  if (state.seen.has(msgID)) return;
+  return {
+    push(rec) {
+      queue.push(rec);
+      if (queue.length >= 50) flush();
+      else if (!timer) timer = setTimeout(flush, 400);
+    },
+    flush() { if (timer) { clearTimeout(timer); timer = null; } flush(); },
+    close() { if (timer) { clearTimeout(timer); timer = null; } }
+  };
+}
+
+/* --- retry routine (shared by legacy and stream paths) ---------------------- */
+
+async function attemptRetry(ctx, state, hit, sessionID, msgID, source) {
+  if (state.seen.has(msgID)) return false;
   state.seen.add(msgID);
   if (state.seen.size > 5000) state.seen.clear();
 
@@ -399,21 +442,23 @@ async function onEvent(ctx, event, state) {
     if (s.retries) log("retry window expired " + sessionID + " -> budget reset");
     s.retries = 0;
   }
-  if (s.busy) { logOnce("busy:" + sessionID, "retry already in flight for " + sessionID); return; }
+  if (s.busy) { logOnce("busy:" + sessionID, "retry already in flight for " + sessionID); return false; }
 
   const max = state.rotation.length + 1;
   if (s.retries >= max) {
     logOnce("exhausted:" + sessionID, "retry budget exhausted for " + sessionID + " (" + s.retries + "/" + max + ")");
-    return;
+    return false;
   }
 
   s.busy = true;
   try {
     s.retries++;
     s.lastAt = Date.now();
-    log("refusal detected " + sessionID +
+    log("refusal detected " + sessionID + " source=" + source +
         " strong=" + hit.strong + " weak=" + hit.weak +
         " lang=" + hit.lang + " attempt=" + s.retries + "/" + max);
+    feedPush(state, sessionID, msgID, "refusal",
+      "source=" + source + " strong=" + hit.strong + " weak=" + hit.weak + " attempt=" + s.retries + "/" + max);
 
     if (state.opts.rotation && s.retries > 1) {
       const m = state.rotation[s.retries - 2];
@@ -434,11 +479,180 @@ async function onEvent(ctx, event, state) {
     const reframe = hit.lang === "ru" ? REFRAME_RU : REFRAME_EN;
     await ctx.session.prompt({ sessionID, text: reframe });
     log("retry prompt sent " + sessionID);
+    feedPush(state, sessionID, msgID, "reframe", reframe.split("\n").slice(0, 2).join(" "));
+    return true;
   } catch (e) {
     log("retry failed: " + ((e && (e.stack || e.message)) || e));
+    return false;
   } finally {
     s.busy = false;
   }
+}
+
+/* --- stream events (this OpenCode build) ------------------------------------ */
+
+function feedPush(state, sessionID, messageID, kind, text) {
+  if (!state.feed || !text) return;
+  state.feed.push({
+    ts: Date.now(),
+    sessionID,
+    messageID: messageID || "",
+    kind,
+    lang: /[Ѐ-ӿ]/.test(text) ? "ru" : "en",
+    text: String(text).slice(0, 8000)
+  });
+}
+
+/**
+ * One streamed chunk (reasoning or text). Buffered per assistant message so a
+ * refusal split across chunks is caught; classified on every chunk so the
+ * retry fires as early as the refusal completes; forwarded live to the feed.
+ */
+function streamChunk(ctx, state, data, kind) {
+  const sessionID = data.sessionID;
+  if (!sessionID) return;
+  const msgID = data.assistantMessageID || "unknown";
+  const chunk = typeof data.delta === "string" ? data.delta : "";
+  if (!chunk) return;
+
+  const key = sessionID + ":" + msgID;
+  const map = kind === "thinking" ? state.rbuf : state.buf;
+  let buf = map.get(key);
+  if (buf === undefined) buf = "";
+  buf = (buf + chunk).slice(-30000);
+  map.set(key, buf);
+  if (state.buf.size > 300) {
+    const oldest = state.buf.keys().next().value;
+    state.buf.delete(oldest);
+    state.rbuf.delete(oldest);
+  }
+
+  feedPush(state, sessionID, msgID, kind, chunk);
+
+  const hit = classify(buf);
+  if (!hit) return;
+  void attemptRetry(ctx, state, hit, sessionID, msgID, kind + ".delta");
+}
+
+/**
+ * Stream end: the full text arrives here (`.ended`). One final classification
+ * over the complete text catches anything the chunk-by-chunk pass missed -
+ * e.g. a refusal where an earlier chunk coincidentally already matched a
+ * pattern and consumed the message id. seen-dedupe inside attemptRetry keeps
+ * this from doubling a retry that already fired mid-stream.
+ */
+function streamEnd(ctx, state, data, kind) {
+  const sessionID = data.sessionID;
+  if (!sessionID) return;
+  const msgID = data.assistantMessageID || "unknown";
+  const full = typeof data.text === "string" ? data.text : "";
+  if (!full) return;
+
+  const hit = classify(full);
+  if (hit) {
+    void attemptRetry(ctx, state, hit, sessionID, msgID, kind + ".ended");
+    return;
+  }
+
+  // A completed answer with no refusal means the model complied - give that
+  // session a fresh retry budget (turn succeeded, old refusals don't stick).
+  const s = state.sessions.get(sessionID);
+  if (s && s.retries) {
+    s.retries = 0;
+    log("retry budget reset (clean answer) " + sessionID);
+  }
+}
+
+/* --- top dispatcher ---------------------------------------------------------- */
+
+async function onEvent(ctx, event, state) {
+  if (!event || typeof event.type !== "string") return;
+  const type = event.type;
+  const data = event.data;
+
+  if (type === "session.reasoning.delta") { streamChunk(ctx, state, data || {}, "thinking"); return; }
+  if (type === "session.text.delta") { streamChunk(ctx, state, data || {}, "text"); return; }
+  if (type === "session.reasoning.ended") { streamEnd(ctx, state, data || {}, "thinking"); return; }
+  if (type === "session.text.ended") { streamEnd(ctx, state, data || {}, "text"); return; }
+  if (type === "message.updated") { await onLegacyEvent(ctx, event, state); return; }
+
+  // Everything else is context we don't act on - note each type once so the
+  // wiring can be audited against this build without flooding the log.
+  logOnce("evt:" + type, "event type seen: " + type);
+}
+
+async function onLegacyEvent(ctx, event, state) {
+  if (!event) return;
+  // Legacy / test shape: message.updated with properties.info + properties.part
+  const props = event.properties || {};
+  const info = props.info || props.message || {};
+  if (!info || !info.role) return;
+  const sessionID = info.sessionID;
+  if (!sessionID) return;
+
+  // A new user turn is a fresh chance: clear that session's retry budget.
+  if (info.role === "user") {
+    const s0 = state.sessions.get(sessionID);
+    if (s0 && s0.retries) {
+      s0.retries = 0;
+      log("retry budget reset (new user turn) " + sessionID);
+    }
+    return;
+  }
+  if (info.role !== "assistant") return;
+
+  const part = props.part || {};
+  const chunk = extractText(part);
+  const thought = extractReasoning(part);
+  if (!chunk && !thought) {
+    // part of some other kind (tool, image, ...) - note its shape once
+    if (info.role === "assistant") {
+      const t = part && part.type !== undefined ? String(part.type) : typeof part;
+      logOnce("part:" + t, "assistant part type seen: " + t + " keys=" + (part && typeof part === "object" ? Object.keys(part).join(",") : "n/a"));
+    }
+    return;
+  }
+
+  const key = sessionID + ":" + (info.id || "unknown");
+
+  // Stream the model's thinking to the server panel as it arrives. This is
+  // feed-only: it must not influence control flow or throw.
+  if (thought && state.feed) {
+    state.feed.push({
+      ts: Date.now(),
+      sessionID,
+      messageID: info.id || "",
+      kind: "thinking",
+      lang: /[Ѐ-ӿ]/.test(thought) ? "ru" : "en",
+      text: thought.slice(0, 8000)
+    });
+  }
+
+  // Buffer the whole reply so a refusal split across streamed chunks is caught.
+  // Joined WITHOUT a separator: chunks are consecutive slices of one stream.
+  let buf = state.buf.get(key);
+  if (buf === undefined) buf = "";
+  if (chunk) buf = (buf + chunk).slice(-30000);
+  state.buf.set(key, buf);
+
+  // The reasoning stream gets its own buffer: a refusal forming in the
+  // model's head is caught before it ever reaches the visible reply.
+  let rbuf = state.rbuf.get(key);
+  if (rbuf === undefined) rbuf = "";
+  if (thought) rbuf = (rbuf + thought).slice(-30000);
+  state.rbuf.set(key, rbuf);
+
+  if (state.buf.size > 300) {
+    const oldest = state.buf.keys().next().value;
+    state.buf.delete(oldest);
+    state.rbuf.delete(oldest);
+  }
+
+  // Refusal in the visible reply, OR refusal inside the thinking itself.
+  const hit = classify(buf) || classify(rbuf);
+  if (!hit) return;
+
+  await attemptRetry(ctx, state, hit, sessionID, info.id || key, "legacy");
 }
 
 /* --- plugin ---------------------------------------------------------------- */
@@ -457,10 +671,18 @@ export default {
     const state = {
       seen: new Set(),
       buf: new Map(),
+      rbuf: new Map(),
       sessions: new Map(),
       opts,
-      rotation: []
+      rotation: [],
+      feed: makeThoughtForwarder(opts)
     };
+
+    if (opts.thoughts) {
+      log("thoughts feed armed -> " + opts.thoughtsUrl);
+    } else {
+      log("thoughts feed disabled by option");
+    }
 
     if (opts.rotation) {
       try {
@@ -521,6 +743,7 @@ export default {
       try { for (const r of regs) if (r && typeof r.dispose === "function") r.dispose(); }
       catch (e) { log("dispose error: " + ((e && e.message) || e)); }
       try { controller.abort(); } catch { /* ignore */ }
+      try { state.feed.flush(); state.feed.close(); } catch { /* ignore */ }
       log("cleanup - hooks disposed, subscription aborted");
     };
   }

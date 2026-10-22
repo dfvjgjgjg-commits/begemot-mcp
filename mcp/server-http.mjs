@@ -62,7 +62,10 @@ function extractKey(req) {
   const h = req.headers["authorization"] || "";
   if (h.toLowerCase().startsWith("bearer ")) return h.slice(7).trim();
   const x = req.headers["x-api-key"];
-  return typeof x === "string" ? x.trim() : "";
+  if (typeof x === "string" && x.trim()) return x.trim();
+  // EventSource (панель мыслей) не умеет задавать заголовки — ключ в query.
+  const q = req.query && typeof req.query.key === "string" ? req.query.key.trim() : "";
+  return q;
 }
 
 function safeEqual(a, b) {
@@ -138,6 +141,155 @@ if (AS_URL) {
     });
   });
 }
+
+/* ------------------------------------------------------------------ */
+/* thoughts feed (greenlight plugin streams model thinking here)        */
+/* ------------------------------------------------------------------ */
+const THOUGHTS_MAX = 1000;             // ring per session
+const THOUGHTS_MAX_SESSIONS = 50;      // sessions kept in memory
+const thoughts = new Map();            // sessionID -> array of records
+const thoughtOrder = [];               // sessionIDs, oldest first (LRU)
+const thoughtSse = new Set();          // live panel subscribers
+
+function rememberThought(sessionID, rec) {
+  let arr = thoughts.get(sessionID);
+  if (!arr) {
+    arr = [];
+    thoughts.set(sessionID, arr);
+    thoughtOrder.push(sessionID);
+    while (thoughtOrder.length > THOUGHTS_MAX_SESSIONS) {
+      thoughts.delete(thoughtOrder.shift());
+    }
+  }
+  arr.push(rec);
+  if (arr.length > THOUGHTS_MAX) arr.splice(0, arr.length - THOUGHTS_MAX);
+  const payload = "data: " + JSON.stringify({ sessionID, ...rec }) + "\n\n";
+  for (const res of thoughtSse) {
+    try { res.write(payload); } catch { thoughtSse.delete(res); }
+  }
+}
+
+// Ingest a single thought or an array of them. Body: { sessionID, messageID,
+// kind, text, lang } or { sessionID, thoughts: [...] }. kind: thinking|text|
+// refusal|reframe|system. Auth-gated like everything else here.
+app.post("/thoughts", requireAuth, (req, res) => {
+  const body = req.body || {};
+  const sessionID = String(body.sessionID || "default").slice(0, 200);
+  const list = Array.isArray(body.thoughts) ? body.thoughts : [body];
+  const now = Date.now();
+  const accepted = [];
+  for (const t of list) {
+    if (!t || typeof t !== "object") continue;
+    const text = typeof t.text === "string" ? t.text.slice(0, 20000) : "";
+    if (!text) continue;
+    const rec = {
+      ts: now,
+      sessionID,
+      messageID: String(t.messageID || "").slice(0, 200),
+      kind: ["thinking", "text", "refusal", "reframe", "system"].includes(t.kind) ? t.kind : "thinking",
+      lang: t.lang === "ru" ? "ru" : "en",
+      text
+    };
+    rememberThought(sessionID, rec);
+    accepted.push(rec);
+  }
+  res.json({ ok: true, stored: accepted.length });
+});
+
+// JSON view for a session (or all, newest last). Used by the panel bootstrap
+// and by curl.
+app.get("/thoughts", requireAuth, (req, res) => {
+  const sessionID = typeof req.query.session === "string" ? req.query.session : null;
+  if (sessionID) {
+    return res.json({ ok: true, sessionID, thoughts: thoughts.get(sessionID) || [] });
+  }
+  const all = [];
+  for (const [sid, arr] of thoughts) all.push({ sessionID: sid, count: arr.length, last: arr[arr.length - 1] });
+  res.json({ ok: true, sessions: all });
+});
+
+// Live stream: text/event-stream. Panel connects here; each stored thought is
+// pushed as it arrives. Heartbeat every 20 s keeps proxies from dropping it.
+app.get("/thoughts/stream", requireAuth, (req, res) => {
+  res.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    connection: "keep-alive"
+  });
+  res.write("retry: 3000\n\n");
+  const sid = typeof req.query.session === "string" ? req.query.session : null;
+  const filter = sid
+    ? (payload) => payload.sessionID === sid
+    : () => true;
+  const wrapped = {
+    write(chunk) {
+      const json = chunk.startsWith("data: ") ? chunk.slice(6).replace(/\n\n$/, "") : chunk;
+      try {
+        const obj = JSON.parse(json);
+        if (!filter(obj)) return true;
+      } catch { /* heartbeat or unknown frame - pass through */ }
+      res.write(chunk);
+      return true;
+    }
+  };
+  thoughtSse.add(wrapped);
+  const hb = setInterval(() => { try { res.write(": hb\n\n"); } catch { /* closed */ } }, 20000);
+  req.on("close", () => { thoughtSse.delete(wrapped); clearInterval(hb); });
+});
+
+// Browser panel: shows every thought live, refusal/reframe highlighted.
+app.get("/thoughts.html", requireAuth, (_req, res) => {
+  res.type("html").send(PANEL_HTML);
+});
+
+const PANEL_HTML = `<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BEGEMOT - мысли модели</title>
+<style>
+  body{background:#0d0d0d;color:#c8c8c8;font:13px/1.45 Consolas,monospace;margin:0;padding:16px}
+  h1{font-size:15px;color:#ff9d00;margin:0 0 10px}
+  #bar{display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+  input,select,button{background:#161616;color:#c8c8c8;border:1px solid #333;padding:5px 8px;font:inherit}
+  button{cursor:pointer}button:hover{border-color:#ff9d00}
+  #log{border:1px solid #222;padding:8px;height:70vh;overflow-y:auto}
+  .row{margin:0 0 6px;padding:4px 6px;border-left:3px solid #333}
+  .thinking{border-color:#3a6ea5}.text{border-color:#555}
+  .refusal{border-color:#a33;background:#1a0d0d;color:#ff8080}
+  .reframe{border-color:#3a3;background:#0d1a0d;color:#80ff80}
+  .system{border-color:#ff9d00;color:#ffce93}
+  .meta{color:#666;font-size:11px}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#333;margin-right:6px}
+  .dot.on{background:#3a3}
+  #count{color:#666;font-size:11px}
+</style></head><body>
+<h1>BEGEMOT - мысли модели (live)</h1>
+<div id="bar">
+  <span class="dot" id="dot"></span><span id="state">connecting...</span>
+  <input id="filter" placeholder="фильтр по тексту" size="24">
+  <select id="kind"><option value="">все виды</option><option>thinking</option><option>text</option><option>refusal</option><option>reframe</option><option>system</option></select>
+  <button id="pause">пауза</button>
+  <button id="clear">очистить</button>
+  <span id="count"></span>
+</div>
+<div id="log"></div>
+<script>
+const key=new URLSearchParams(location.search).get("key")||"";
+const logEl=document.getElementById("log"),dot=document.getElementById("dot"),state=document.getElementById("state"),countEl=document.getElementById("count");
+let n=0,paused=false;const es=new EventSource("/thoughts/stream"+(key?"?key="+encodeURIComponent(key):""));
+es.onopen=()=>{dot.classList.add("on");state.textContent="live"};
+es.onerror=()=>{dot.classList.remove("on");state.textContent="reconnecting..."};
+es.onmessage=e=>{if(paused)return;let m;try{m=JSON.parse(e.data)}catch{return}
+  const f=document.getElementById("filter").value.toLowerCase(),k=document.getElementById("kind").value;
+  if(f&&!m.text.toLowerCase().includes(f))return;if(k&&m.kind!==k)return;
+  const d=document.createElement("div");d.className="row "+m.kind;
+  const t=new Date(m.ts).toLocaleTimeString();
+  d.innerHTML='<div class="meta">'+t+" ["+m.kind+"] "+(m.sessionID||"")+(m.lang==="ru"?" ru":"")+'</div><div></div>';
+  d.lastChild.textContent=m.text;logEl.appendChild(d);logEl.scrollTop=logEl.scrollHeight;
+  if(++n>2000){logEl.removeChild(logEl.firstChild);n--}countEl.textContent=n+" записей"};
+document.getElementById("pause").onclick=e=>{paused=!paused;e.target.textContent=paused?"продолжить":"пауза"};
+document.getElementById("clear").onclick=()=>{logEl.innerHTML="";n=0;countEl.textContent=""};
+</script></body></html>`;
 
 /* ------------------------------------------------------------------ */
 /* boot                                                                */

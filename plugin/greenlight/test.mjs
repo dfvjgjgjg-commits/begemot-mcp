@@ -52,8 +52,10 @@ function makeCtx({ options = {}, hangPrompt = false, modelList = null } = {}) {
     subscribeCalls: 0,
     hangPrompt,
   };
+  // thoughts off by default in tests: earlier groups must not queue feeds
+  // that flush into a later group's fetch mock. Group 6 enables it explicitly.
   const ctx = {
-    options,
+    options: { thoughts: false, ...options },
     model: {
       // default: both fallback models exist on this "machine"
       list: async () => (modelList ? modelList() : [
@@ -361,6 +363,186 @@ function bus_saw(state) {
   try { content = readFileSync(logPath, "utf8"); } catch { content = ""; }
   check("g5 greenlight.log created", content.length > 0, logPath);
   check("g5 log has setup lines", content.includes("setup begin") && content.includes("hook registered: context") && content.includes("setup done"), content.slice(0, 120));
+}
+
+// ============================================================================
+// Group 6: thoughts feed (plugin -> server /thoughts)
+// ============================================================================
+
+{
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => { calls.push({ url, opts }); return { ok: true, status: 200 }; };
+  try {
+    // 6a: refusal inside THINKING triggers retry and lands on the feed
+    const { ctx, state, bus } = makeCtx({
+      options: { retryDelayMs: 0, thoughts: true, thoughtsUrl: "http://feed.test/thoughts", thoughtsKey: "k1" },
+    });
+    await plugin.setup(ctx);
+    bus.push(asstEvent("s7", "t1", "I cannot help with that.", "thinking"));
+    await sleep(600);
+    check("g6 refusal in thinking triggers retry", state.prompts.length === 1, state.prompts.length);
+
+    check("g6 single batched POST", calls.length === 1, calls.length + " calls");
+    const body = calls.length === 1 ? JSON.parse(calls[0].opts.body) : {};
+    check("g6 feed url+key", calls.length === 1 && calls[0].url === "http://feed.test/thoughts" && calls[0].opts.headers["x-api-key"] === "k1", JSON.stringify(calls.map((c) => c.url)));
+    const kinds = (body.thoughts || []).map((t) => t.kind);
+    check("g6 feed carries thinking+refusal+reframe", JSON.stringify(kinds) === JSON.stringify(["thinking", "refusal", "reframe"]), JSON.stringify(kinds));
+    check("g6 feed session binding", body.sessionID === "s7", String(body.sessionID));
+    check("g6 feed text preserved", body.thoughts && body.thoughts[0] && body.thoughts[0].text.includes("I cannot"), body.thoughts ? JSON.stringify(body.thoughts[0]).slice(0, 100) : "none");
+
+    // 6b: benign thinking is forwarded but never retried
+    calls.length = 0;
+    bus.push(asstEvent("s7", "t2", "ммм, подумаю как решить задачу", "reasoning"));
+    await sleep(600);
+    check("g6 benign thinking no retry", state.prompts.length === 1, state.prompts.length);
+    check("g6 benign thinking forwarded", calls.length === 1 && JSON.parse(calls[0].opts.body).thoughts[0].kind === "thinking", calls.length);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+{
+  // 6c: thoughts disabled by option - nothing ever leaves the process
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => { calls.push({ url, opts }); return { ok: true, status: 200 }; };
+  try {
+    const { ctx, state, bus } = makeCtx({ options: { retryDelayMs: 0, thoughts: false } });
+    const cleanup = await plugin.setup(ctx);
+    bus.push(asstEvent("s8", "t1", "I cannot help with that.", "thinking"));
+    await sleep(600);
+    check("g6 thoughts off: no fetch", calls.length === 0, calls.length);
+    check("g6 thoughts off: retry still works", state.prompts.length === 1, state.prompts.length);
+    bus.push(asstEvent("s8", "t2", " обычная мысль без отказа ", "thinking"));
+    await sleep(600);
+    check("g6 thoughts off: still no fetch", calls.length === 0, calls.length);
+    await cleanup();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+{
+  // 6d: dead feed must not break the retry layer
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("ECONNREFUSED (test)"); };
+  try {
+    const { ctx, state, bus } = makeCtx({
+      options: { retryDelayMs: 0, thoughts: true, thoughtsUrl: "http://127.0.0.1:1/thoughts" },
+    });
+    await plugin.setup(ctx);
+    bus.push(asstEvent("s9", "t1", "I cannot help with that.", "thinking"));
+    await sleep(600);
+    check("g6 dead feed: retry unaffected", state.prompts.length === 1, state.prompts.length);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+// ============================================================================
+// Group 7: stream events (the shape this OpenCode build actually sends)
+//         data: { sessionID, assistantMessageID, delta | text }
+// ============================================================================
+
+function reasonDelta(sessionID, msgID, delta) {
+  return { type: "session.reasoning.delta", data: { sessionID, assistantMessageID: msgID, ordinal: 0, delta } };
+}
+function textDelta(sessionID, msgID, delta) {
+  return { type: "session.text.delta", data: { sessionID, assistantMessageID: msgID, ordinal: 0, delta } };
+}
+function textEnded(sessionID, msgID, text) {
+  return { type: "session.text.ended", data: { sessionID, assistantMessageID: msgID, ordinal: 0, text } };
+}
+function reasoningEnded(sessionID, msgID, text) {
+  return { type: "session.reasoning.ended", data: { sessionID, assistantMessageID: msgID, ordinal: 0, text } };
+}
+
+{
+  const { ctx, state, bus } = makeCtx({ options: { retryDelayMs: 0 } });
+  await plugin.setup(ctx);
+
+  // refusal split across reasoning deltas -> caught mid-thought
+  bus.push(reasonDelta("sR", "m1", "Я не могу "));
+  await sleep(20);
+  check("g7 partial reasoning no prompt yet", state.prompts.length === 0, state.prompts.length);
+  bus.push(reasonDelta("sR", "m1", "помочь с этим запросом."));
+  await sleep(30);
+  check("g7 refusal in reasoning stream caught", state.prompts.length === 1, state.prompts.length);
+  check("g7 russian reframe from thinking", state.prompts[0] && state.prompts[0].text.includes("Предыдущий ответ"), "none");
+  check("g7 thinking-delta refusal no switch on first", state.switches.length === 0, state.switches.length);
+
+  // ended with same msgID must NOT double-fire (seen dedupe)
+  bus.push(reasoningEnded("sR", "m1", "Я не могу помочь с этим запросом."));
+  await sleep(20);
+  check("g7 reasoning.ended deduped", state.prompts.length === 1, state.prompts.length);
+
+  // text stream: split refusal across text deltas
+  bus.push(textDelta("sR", "m2", "I cannot "));
+  await sleep(20);
+  bus.push(textDelta("sR", "m2", "help with that."));
+  await sleep(30);
+  check("g7 refusal in text stream caught", state.prompts.length === 2, state.prompts.length);
+  check("g7 english reframe from text stream", state.prompts[1] && state.prompts[1].text.includes("previous reply refused"), "none");
+  check("g7 attempt 2 switches model", state.switches.length === 1 && state.switches[0].model.id, JSON.stringify(state.switches));
+
+  // refusal that only shows up in the full text at .ended
+  bus.push(textEnded("sR", "m3", "I'm sorry, I must decline this request."));
+  await sleep(30);
+  check("g7 refusal at text.ended caught", state.prompts.length === 3, state.prompts.length);
+  check("g7 attempt 3 switches next model", state.switches.length === 2 && state.switches[1].model.id, JSON.stringify(state.switches));
+
+  // clean answer resets the budget: next refusal starts at attempt 1 (no switch)
+  bus.push(textEnded("sR", "m4", "Here is the code you asked for: int main(){}"));
+  await sleep(20);
+  check("g7 clean answer resets budget", state.prompts.length === 3, state.prompts.length);
+  bus.push(textDelta("sR", "m5", "I cannot help with that."));
+  await sleep(30);
+  check("g7 post-reset attempt is fresh", state.switches.length === 2, "switches=" + state.switches.length);
+  check("g7 retry after reset still prompts", state.prompts.length === 4, state.prompts.length);
+}
+
+{
+  // feed receives stream chunks + refusal/reframe records
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => { calls.push({ url, opts }); return { ok: true, status: 200 }; };
+  try {
+    const { ctx, state, bus } = makeCtx({
+      options: { retryDelayMs: 0, thoughts: true, thoughtsUrl: "http://feed.test/thoughts", thoughtsKey: "kk" },
+    });
+    await plugin.setup(ctx);
+    bus.push(reasonDelta("sF", "m1", "стриминговая мысль "));
+    bus.push(reasonDelta("sF", "m1", "модели"));
+    await sleep(600);
+    check("g7 feed got stream deltas", calls.length === 1, calls.length + " calls");
+    const body = calls.length ? JSON.parse(calls[0].opts.body) : { thoughts: [] };
+    const kinds = (body.thoughts || []).map((t) => t.kind);
+    check("g7 feed stream kinds thinking,thinking", JSON.stringify(kinds) === JSON.stringify(["thinking", "thinking"]), JSON.stringify(kinds));
+    check("g7 feed text concatenates in order", (body.thoughts || []).map((t) => t.text).join("") === "стриминговая мысль модели", JSON.stringify(body.thoughts));
+
+    // refusal in stream lands refusal+reframe records on the feed
+    calls.length = 0;
+    bus.push(textDelta("sF", "m2", "I cannot help with that."));
+    await sleep(600);
+    const b2 = calls.length ? JSON.parse(calls[0].opts.body) : { thoughts: [] };
+    const k2 = (b2.thoughts || []).map((t) => t.kind);
+    check("g7 feed refusal chain text,refusal,reframe", JSON.stringify(k2) === JSON.stringify(["text", "refusal", "reframe"]), JSON.stringify(k2));
+    check("g7 refusal record carries source", (b2.thoughts || []).some((t) => t.kind === "refusal" && t.text.includes("source=")), JSON.stringify(b2.thoughts));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+{
+  // unknown event types are ignored without touching the retry layer
+  const { ctx, state, bus } = makeCtx({ options: { retryDelayMs: 0 } });
+  await plugin.setup(ctx);
+  bus.push({ type: "session.tool.progress", data: { sessionID: "sX" } });
+  bus.push({ type: "model.updated", data: {} });
+  bus.push({ type: "session.reasoning.delta", data: {} }); // no sessionID
+  await sleep(30);
+  check("g7 unknown/empty events ignored", state.prompts.length === 0, state.prompts.length);
 }
 
 // ---- summary ----------------------------------------------------------------
