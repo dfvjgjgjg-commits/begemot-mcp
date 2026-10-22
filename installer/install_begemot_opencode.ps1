@@ -278,8 +278,13 @@ Step 6 "Local HTTP endpoint on 127.0.0.1:$HttpPort (no Docker)..."
 # stop a previous instance of this task so the new code is picked up
 try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch {}
 Start-Sleep -Seconds 1
+# kill an old supervisor and an old direct-spawned server alike, otherwise a
+# stale process keeps holding the port and the fresh one never starts
 Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -like "*server-http.mjs*" } |
+    ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }
+Get-CimInstance Win32_Process -Filter "Name='powershell.EXE'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -match '\\begemot-mcp\\watchdog\.ps1' } |
     ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }
 
 # wrapper script so the task has a stable entrypoint
@@ -292,17 +297,60 @@ set HOST=127.0.0.1
 "$NodeExe" server-http.mjs
 "@ | Set-Content $httpLauncher -Encoding ascii
 
+# ---- supervisor configuration -------------------------------------------
+# The task runs watchdog.ps1 rather than node directly. The watchdog owns the
+# server as a child process and restarts it whenever it dies or stops answering
+# (~3s recovery), so a killed server comes back on its own. See mcp/watchdog.ps1
+# for the reasoning and the failure modes this replaces.
+$watchdog = Join-Path $McpDir "watchdog.ps1"
+$watchdogCfg = Join-Path $McpDir "watchdog.config.json"
+$hasWatchdog = Test-Path $watchdog
+if ($hasWatchdog) {
+    @{
+        node  = $NodeExe
+        port  = $HttpPort
+        entry = "server-http.mjs"
+    } | ConvertTo-Json | Set-Content -Path $watchdogCfg -Encoding UTF8
+    Ok "watchdog config -> $watchdogCfg"
+} else {
+    Warn "watchdog.ps1 not deployed - task will run the server directly (no self-heal)"
+}
+
+# Windows Task Scheduler's own RestartOnFailure does not fire when the action is
+# force-killed (observed LastTaskResult 0xFFFFFFFF, no restart), so resilience
+# comes from a repeating TimeTrigger instead: PT1M for 24h, re-armed at every
+# install/logon. With MultipleInstancesPolicy=IgnoreNew a trigger that fires
+# while the supervisor is alive is discarded; one that fires while it is dead
+# brings the whole stack back within ~60s.
 $taskRegistered = $false
 try {
-    $action    = New-ScheduledTaskAction -Execute $NodeExe -Argument "server-http.mjs" -WorkingDirectory $McpDir
-    $trigger   = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+    if ($hasWatchdog) {
+        $psExe  = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.EXE"
+        $psArgs = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $watchdog + '"'
+        $action = New-ScheduledTaskAction -Execute $psExe -Argument $psArgs -WorkingDirectory $McpDir
+    } else {
+        $action = New-ScheduledTaskAction -Execute $NodeExe -Argument "server-http.mjs" -WorkingDirectory $McpDir
+    }
+
+    $logonTrigger  = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+    $repeatTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+                        -RepetitionInterval (New-TimeSpan -Minutes 1) `
+                        -RepetitionDuration (New-TimeSpan -Hours 24)
+
     $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
                   -ExecutionTimeLimit ([TimeSpan]::Zero) -Hidden -RestartCount 3 `
-                  -RestartInterval (New-TimeSpan -Minutes 1)
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings `
+                  -RestartInterval (New-TimeSpan -Minutes 1) `
+                  -MultipleInstances IgnoreNew -StartWhenAvailable
+
+    Register-ScheduledTask -TaskName $TaskName -Action $action `
+        -Trigger @($logonTrigger, $repeatTrigger) -Settings $settings `
         -Description "Begemot MCP Streamable HTTP on 127.0.0.1:$HttpPort" -Force | Out-Null
     $taskRegistered = $true
-    Ok "autostart task '$TaskName' registered (runs at logon, hidden)"
+    if ($hasWatchdog) {
+        Ok "autostart task '$TaskName' registered (watchdog, logon + 1min re-check, hidden)"
+    } else {
+        Ok "autostart task '$TaskName' registered (runs at logon, hidden)"
+    }
 } catch {
     Warn "could not register scheduled task: $($_.Exception.Message)"
     Warn "falling back to a plain background start"

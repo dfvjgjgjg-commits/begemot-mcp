@@ -257,12 +257,58 @@ if (existsSync(serverPath)) {
 
 /* ---------------------------------------------------------------- http (opt) */
 
+let HTTP_OK = false;
 try {
   const r = await fetch("http://127.0.0.1:" + HTTP_PORT + "/health", { signal: AbortSignal.timeout(3000) });
   const t = await r.text();
+  HTTP_OK = true;
   ok("http", "127.0.0.1:" + HTTP_PORT + " -> " + t.slice(0, 120));
 } catch {
   warn("http", "127.0.0.1:" + HTTP_PORT + " not answering (the HTTP mode is optional)");
+}
+
+/* -------------------------------------------------------------- watchdog (win)
+ * On Windows the HTTP endpoint is held up by watchdog.ps1, which restarts the
+ * server whenever it dies. A missing supervisor is the condition that used to
+ * leave the endpoint permanently down after a kill, so it is worth its own line
+ * instead of being inferred from /health (which a stale process can answer).
+ */
+
+if (process.platform === "win32") {
+  try {
+    // Match on the deploy path so an unrelated *.ps1 can never be counted.
+    // CommandLine is compared with -like; backslashes are literal there, only
+    // '*' and '?' are wildcards, and the path contains neither.
+    const wdScript = join(MCP_DIR, "watchdog.ps1");
+    const ps =
+      "$c = @(Get-CimInstance Win32_Process -Filter \"Name='powershell.EXE'\" -ErrorAction SilentlyContinue | " +
+      "Where-Object { $_.CommandLine -like '*" + wdScript.replace(/'/g, "''") + "*' }).Count; " +
+      "Write-Output $c";
+    const out = execFileSync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", ps],
+      { encoding: "utf8", timeout: 30000 }
+    ).trim();
+
+    const wdScriptExists = existsSync(join(MCP_DIR, "watchdog.ps1"));
+    const wdCfgExists = existsSync(join(MCP_DIR, "watchdog.config.json"));
+    const running = parseInt(out, 10) > 0;
+
+    if (!wdScriptExists) {
+      warn("watchdog", "watchdog.ps1 not deployed - endpoint has no self-heal");
+    } else if (running) {
+      ok("watchdog", "supervisor running (auto-restart armed)");
+    } else if (HTTP_OK) {
+      warn("watchdog", "supervisor not running - endpoint is up but will NOT survive a kill");
+    } else {
+      bad("watchdog", "supervisor not running and endpoint is down - run: Start-ScheduledTask -TaskName BegemotMcpHttp");
+    }
+    if (wdScriptExists && !wdCfgExists) {
+      warn("watchdog", "watchdog.config.json missing - supervisor will fall back to defaults");
+    }
+  } catch (e) {
+    warn("watchdog", "could not query supervisor state: " + (e.message || e).toString().slice(0, 120));
+  }
 }
 
 /* --------------------------------------------------------- opencode registry */

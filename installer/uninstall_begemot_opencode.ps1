@@ -128,7 +128,18 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyCon
     ForEach-Object {
         try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $killed++ } catch {}
     }
+# The supervisor is a powershell process that owns the server as a child. If it
+# is left alive it simply restarts the server afterwards and undoes the removal,
+# so it must be stopped too. Anchored on the deploy path so this script itself
+# (or any unrelated powershell) can never match.
+$watchdogs = 0
+Get-CimInstance Win32_Process -Filter "Name='powershell.EXE'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -match '\\begemot-mcp\\watchdog\.ps1' } |
+    ForEach-Object {
+        try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; $watchdogs++ } catch {}
+    }
 if ($killed) { Ok "$killed server process(es) stopped" } else { Skip "no server process running" }
+if ($watchdogs) { Ok "$watchdogs watchdog process(es) stopped" } else { Skip "no watchdog running" }
 
 # give the port a moment to be released
 Start-Sleep -Seconds 1
@@ -268,6 +279,10 @@ foreach ($cf in @("opencode.jsonc", "opencode.json")) {
 $running = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -like "*server-http.mjs*" })
 if ($running.Count) { $left += "$($running.Count) server process(es) still running" }
+# a surviving supervisor would resurrect the server, so it counts as leftover
+$wdRunning = @(Get-CimInstance Win32_Process -Filter "Name='powershell.EXE'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -match '\\begemot-mcp\\watchdog\.ps1' })
+if ($wdRunning.Count) { $left += "$($wdRunning.Count) watchdog process(es) still running" }
 
 Write-Host ""
 if ($left.Count) {
