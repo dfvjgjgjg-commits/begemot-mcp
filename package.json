@@ -1,6 +1,6 @@
 {
   "name": "begemot-mcp",
-  "version": "6.7.0",
+  "version": "6.8.0",
   "private": true,
   "type": "module",
   "description": "Begemot MCP workspace: transports, shared core and the Cloudflare Worker build",

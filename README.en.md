@@ -2,14 +2,14 @@
 
 **Begemot на светофоре** — a persona / workflow layer for [OpenCode](https://opencode.ai) built from four parts:
 
-1. **`mcp/`** — an MCP server (`begemot-traffic-light`, **v6.4.3**) that tracks a "traffic light" progression across requests (steps 0→10) and returns a directive block that lands **before the model starts reasoning**, plus MCP-spec `instructions` / prompts / resources. Core lives in `mcp/core.mjs`; transports are `server.js` (stdio) and `server-http.mjs` (Streamable HTTP).
-2. **`plugin/greenlight/`** — an OpenCode V2 plugin that puts the reasoning protocol at the very **front** of the system prompt (before the model begins thinking) and reacts to refusals.
+1. **`mcp/`** — an MCP server (`begemot-traffic-light`, **v6.8.0**) that tracks a "traffic light" progression across requests (steps 0→10) and returns a directive block that lands **before the model starts reasoning**, plus MCP-spec `instructions` / prompts / resources. Core lives in `mcp/core.mjs`; transports are `server.js` (stdio) and `server-http.mjs` (Streamable HTTP). The endpoint is kept alive by the `watchdog.ps1` supervisor — a killed server comes back on its own in ~6 s. **`/`** — a live status page (version, uptime, feed counters, latest thought). **`/thoughts.html`** — the model's thoughts panel, no key required: the reasoning stream live, refusals in red, reframes in green; reading is open, writing needs the API key.
+2. **`plugin/greenlight/`** — an OpenCode V2 plugin that puts the reasoning protocol into the system prompt in three places (front, end, last user message, plus a `compaction` hook), listens to **this build's real event stream** (`session.reasoning.delta` / `session.text.delta` / `.ended`) and catches refusals even when split mid-phrase — including refusals forming **in the model's thoughts**, before they ever reach the visible answer. On a refusal it retries with a reframe in the refusal's language and rotates to an open-weight model; a clean answer resets the retry budget. Thoughts are streamed to the server feed. Everything is written to `greenlight.log`. Toggles and tests live in `plugin/greenlight/test.mjs` (80 checks).
 3. **`remote/`** — network serving: Cloudflare Worker, `wrangler.jsonc`, Dockerfile and the `remote/REMOTE.md` runbook.
 4. **`installer/`** — one-click installers for Windows, macOS and Linux that set everything up (Node.js, MCP server, config, prompt, plugin).
 
 > Made for my beloved Lolz.
 
-**What's new in 6.4.4 / 6.4.3 / 6.4.2 — see [CHANGELOG.md](CHANGELOG.md)** (installer no longer hangs on the final `Read-Host`, real tool names in the prompt + slimmed gate response, all emoji stripped from the output).
+**What's new in 6.8.0 / 6.7.0 / 6.6.0 — see [CHANGELOG.md](CHANGELOG.md)** (root `/` — live server status page; the thoughts panel `/thoughts.html` opens without a key — anyone dropping in can watch how the model thinks, writing stays key-gated; the model's thought feed streams live to the server; the reactive layer rewired to this build's real events; streaming buffering, two-tier classification, retry-budget reset; the HTTP endpoint no longer stays dead — the supervisor brings it back).
 
 ---
 
@@ -35,7 +35,7 @@ The key **`9db6f52871e4c30a`** is baked into `mcp/server-http.mjs` and `remote/w
 
 ```sh
 cd mcp && npm install && npm run start:http
-# Begemot MCP v6.4.3 — Streamable HTTP on http://0.0.0.0:8788/mcp
+# Begemot MCP v6.8.0 — Streamable HTTP on http://0.0.0.0:8788/mcp
 #    auth: shared public key 9db6f52871e4c30a   shell: disabled   state: in-memory
 ```
 

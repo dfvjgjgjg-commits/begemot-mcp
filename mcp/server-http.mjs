@@ -22,6 +22,9 @@
  *   BEGEMOT_OAUTH_AS_URL    when set, publishes RFC 9728 protected-resource
  *                           metadata pointing at that authorization server
  *   BEGEMOT_ALLOWED_HOSTS   comma-separated Host allowlist (bind 0.0.0.0)
+ *   BEGEMOT_PANEL_PUBLIC    "0" requires the API key for reads too (default:
+ *                           reads - /, /status, /thoughts*, /thoughts.html,
+ *                           /thoughts/stream - are public; writes stay keyed)
  */
 
 import crypto from "crypto";
@@ -82,6 +85,13 @@ function requireAuth(req, res, next) {
   }
   next();
 }
+
+/* Reads are public by default: the point of the panel is that anyone can
+ * watch how the model thinks. Writes (POST /thoughts) stay key-gated, so a
+ * visitor can read but never inject. Set BEGEMOT_PANEL_PUBLIC=0 to require
+ * the key for reads too. */
+const PANEL_PUBLIC = process.env.BEGEMOT_PANEL_PUBLIC !== "0";
+const readGuard = PANEL_PUBLIC ? (_req, _res, next) => next() : requireAuth;
 
 /* ------------------------------------------------------------------ */
 /* MCP endpoint                                                        */
@@ -198,7 +208,7 @@ app.post("/thoughts", requireAuth, (req, res) => {
 
 // JSON view for a session (or all, newest last). Used by the panel bootstrap
 // and by curl.
-app.get("/thoughts", requireAuth, (req, res) => {
+app.get("/thoughts", readGuard, (req, res) => {
   const sessionID = typeof req.query.session === "string" ? req.query.session : null;
   if (sessionID) {
     return res.json({ ok: true, sessionID, thoughts: thoughts.get(sessionID) || [] });
@@ -210,7 +220,7 @@ app.get("/thoughts", requireAuth, (req, res) => {
 
 // Live stream: text/event-stream. Panel connects here; each stored thought is
 // pushed as it arrives. Heartbeat every 20 s keeps proxies from dropping it.
-app.get("/thoughts/stream", requireAuth, (req, res) => {
+app.get("/thoughts/stream", readGuard, (req, res) => {
   res.writeHead(200, {
     "content-type": "text/event-stream",
     "cache-control": "no-cache",
@@ -238,7 +248,7 @@ app.get("/thoughts/stream", requireAuth, (req, res) => {
 });
 
 // Browser panel: shows every thought live, refusal/reframe highlighted.
-app.get("/thoughts.html", requireAuth, (_req, res) => {
+app.get("/thoughts.html", readGuard, (_req, res) => {
   res.type("html").send(PANEL_HTML);
 });
 
@@ -289,6 +299,83 @@ es.onmessage=e=>{if(paused)return;let m;try{m=JSON.parse(e.data)}catch{return}
   if(++n>2000){logEl.removeChild(logEl.firstChild);n--}countEl.textContent=n+" записей"};
 document.getElementById("pause").onclick=e=>{paused=!paused;e.target.textContent=paused?"продолжить":"пауза"};
 document.getElementById("clear").onclick=()=>{logEl.innerHTML="";n=0;countEl.textContent=""};
+</script></body></html>`;
+
+/* ------------------------------------------------------------------ */
+/* root: server overview + link to the live panel                       */
+/* ------------------------------------------------------------------ */
+function overview() {
+  let total = 0;
+  let last = null;
+  for (const arr of thoughts.values()) {
+    total += arr.length;
+    const rec = arr[arr.length - 1];
+    if (rec && (!last || rec.ts > last.ts)) last = rec;
+  }
+  return {
+    ok: true,
+    name: "Begemot MCP",
+    version: core.VERSION,
+    auth: API_KEY ? "api-key" : "none",
+    panel_public: PANEL_PUBLIC,
+    thoughts: { sessions: thoughts.size, records: total, last },
+    uptime_s: Math.round(process.uptime()),
+    time: new Date().toISOString()
+  };
+}
+
+app.get("/status", readGuard, (_req, res) => res.json(overview()));
+
+app.get("/", readGuard, (_req, res) => res.type("html").send(ROOT_HTML));
+
+const ROOT_HTML = `<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Begemot MCP - статус сервера</title>
+<style>
+  body{background:#0d0d0d;color:#c8c8c8;font:14px/1.5 Consolas,monospace;margin:0;padding:24px;max-width:840px}
+  h1{color:#ff9d00;font-size:20px;margin:0 0 4px}
+  .sub{color:#666;margin-bottom:20px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:20px}
+  .tile{background:#141414;border:1px solid #262626;border-radius:6px;padding:12px}
+  .tile .k{color:#666;font-size:11px;text-transform:uppercase;letter-spacing:.08em}
+  .tile .v{font-size:22px;color:#f0f0f0;margin-top:4px}
+  .tile .v.on{color:#3ad07a}
+  a.btn{display:inline-block;background:#ff9d00;color:#111;padding:10px 18px;border-radius:6px;text-decoration:none;font-weight:bold;margin-right:10px}
+  a.btn.alt{background:#1f1f1f;color:#ff9d00;border:1px solid #ff9d00}
+  #last{background:#141414;border:1px solid #262626;border-radius:6px;padding:12px;margin-top:14px;min-height:60px}
+  #last .who{color:#666;font-size:11px;margin-bottom:6px}
+  footer{color:#555;margin-top:26px;font-size:12px}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#3ad07a;margin-right:6px}
+</style></head><body>
+<h1>BEGEMOT MCP</h1>
+<div class="sub">сервер жив - мысли модели видны вживую</div>
+<div class="grid">
+  <div class="tile"><div class="k">версия</div><div class="v" id="ver">-</div></div>
+  <div class="tile"><div class="k">uptime</div><div class="v" id="up">-</div></div>
+  <div class="tile"><div class="k">сессий</div><div class="v" id="sess">-</div></div>
+  <div class="tile"><div class="k">записей мыслей</div><div class="v" id="rec">-</div></div>
+</div>
+<a class="btn" href="/thoughts.html">ПАНЕЛЬ МЫСЛЕЙ - как думает модель</a>
+<a class="btn alt" href="/status">status.json</a>
+<a class="btn alt" href="/health">health</a>
+<div id="last"><div class="who"><span class="dot"></span>последняя мысль</div><div id="lastText">ожидание...</div></div>
+<footer>запись на сервер идёт от плагина greenlight; чтение открыто, запись - по ключу API</footer>
+<script>
+async function tick(){
+  try{
+    const s=await (await fetch("/status")).json();
+    ver.textContent=s.version;
+    up.textContent=Math.floor(s.uptime_s/60)+"м "+(s.uptime_s%60)+"с";
+    sess.textContent=s.thoughts.sessions;
+    rec.textContent=s.thoughts.records;
+    if(s.thoughts.last){
+      const l=s.thoughts.last;
+      lastText.textContent="["+(l.kind||"?")+"] "+(l.text||"").slice(0,300);
+    }
+  }catch(e){}
+}
+tick();setInterval(tick,3000);
 </script></body></html>`;
 
 /* ------------------------------------------------------------------ */
