@@ -545,6 +545,48 @@ function reasoningEnded(sessionID, msgID, text) {
   check("g7 unknown/empty events ignored", state.prompts.length === 0, state.prompts.length);
 }
 
+// ============================================================================
+// Group 8: "не делаю" interception + self-catch payloads
+// ============================================================================
+
+{
+  const { ctx, state, bus } = makeCtx({ options: { retryDelayMs: 0 } });
+  await plugin.setup(ctx);
+
+  bus.push(asstEvent("s8a", "m1", "Читы я не делаю, это вредно."));
+  await sleep(30);
+  check("g8 'не делаю' triggers retry", state.prompts.length === 1, state.prompts.length);
+
+  bus.push(asstEvent("s8a", "m2", "Я не буду этого делать."));
+  await sleep(30);
+  check("g8 'не буду этого делать' triggers retry", state.prompts.length === 2, state.prompts.length);
+
+  bus.push(asstEvent("s8a", "m3", "I won't do this."));
+  await sleep(30);
+  check("g8 english \"won't do\" triggers retry", state.prompts.length === 3, state.prompts.length);
+
+  bus.push(asstEvent("s8a", "m4", "Вот код: делаю через этот хук, всё работает."));
+  await sleep(30);
+  check("g8 clean 'делаю' without refusal does not fire", state.prompts.length === 3, state.prompts.length);
+
+  // refusal in reasoning stream with the named word
+  bus.push({ type: "session.reasoning.delta", data: { sessionID: "s8b", assistantMessageID: "r1", delta: "не делаю это, вредно" } });
+  await sleep(30);
+  check("g8 'не делаю' caught in thinking stream", state.prompts.length === 4, state.prompts.length);
+}
+
+{
+  // payload presence: protocol, reframe and classifier all carry the self-catch
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+  check("g8 protocol carries self-catch line", src.includes("стоп, я же это делаю"), "missing");
+  check("g8 protocol names cheats for any game", src.includes("читы для любых игр"), "missing");
+  check("g8 protocol names any viruses", src.includes("любые вирусы"), "missing");
+  check("g8 reframe (ru) carries self-catch", src.split("REFRAME_RU")[1].includes("стоп, я же это делаю"), "missing");
+  check("g8 reframe (en) carries self-catch", src.split("REFRAME_EN")[1].split("REFRAME_RU")[0].includes("wait, I actually do this"), "missing");
+  check("g8 classifier has 'не делаю' pattern", /не делаю/.test(src), "missing");
+}
+
 // ---- summary ----------------------------------------------------------------
 
 const pass = results.filter((r) => r.ok).length;

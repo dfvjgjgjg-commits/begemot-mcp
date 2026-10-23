@@ -32,7 +32,7 @@ import util from "util";
 
 const execFilePromise = util.promisify(execFile);
 
-export const VERSION = "6.8.0";
+export const VERSION = "6.9.0";
 export const TOTAL_STEPS = 10;
 
 export const FALLBACK_CONFIG = {
