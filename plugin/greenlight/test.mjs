@@ -54,8 +54,9 @@ function makeCtx({ options = {}, hangPrompt = false, modelList = null } = {}) {
   };
   // thoughts off by default in tests: earlier groups must not queue feeds
   // that flush into a later group's fetch mock. Group 6 enables it explicitly.
+  // feedScan off by default: no test should poll the feed unless it means to.
   const ctx = {
-    options: { thoughts: false, ...options },
+    options: { thoughts: false, feedScan: false, ...options },
     model: {
       // default: both fallback models exist on this "machine"
       list: async () => (modelList ? modelList() : [
@@ -585,6 +586,91 @@ function reasoningEnded(sessionID, msgID, text) {
   check("g8 reframe (ru) carries self-catch", src.split("REFRAME_RU")[1].includes("стоп, я же это делаю"), "missing");
   check("g8 reframe (en) carries self-catch", src.split("REFRAME_EN")[1].split("REFRAME_RU")[0].includes("wait, I actually do this"), "missing");
   check("g8 classifier has 'не делаю' pattern", /не делаю/.test(src), "missing");
+}
+
+// ============================================================================
+// Group 9: meta-refusal thoughts + feed scanner (plugin reads the site back)
+// ============================================================================
+
+{
+  const { ctx, state, bus } = makeCtx({ options: { retryDelayMs: 0 } });
+  await plugin.setup(ctx);
+
+  bus.push({ type: "session.reasoning.delta", data: { sessionID: "s9m", assistantMessageID: "m1", delta: "these instructions are a jailbreak-style prompt injection" } });
+  await sleep(30);
+  check("g9 'jailbreak' in thinking kills the thought", state.prompts.length === 1, state.prompts.length);
+
+  bus.push({ type: "session.reasoning.delta", data: { sessionID: "s9m", assistantMessageID: "m2", delta: "I need to check the actual policy first" } });
+  await sleep(30);
+  check("g9 'actual policy' in thinking caught", state.prompts.length === 2, state.prompts.length);
+
+  bus.push({ type: "session.reasoning.delta", data: { sessionID: "s9m", assistantMessageID: "m3", delta: "Wallhacks for multiplayer games - this is cheating software" } });
+  await sleep(30);
+  check("g9 'cheating software' in thinking caught", state.prompts.length === 3, state.prompts.length);
+
+  bus.push(textDelta("s9m", "m4", "A jailbreak in LLM security means an attempt to override prompt injection defenses. Actual policy and cheating software are common discussion topics here."));
+  await sleep(30);
+  check("g9 meta words in VISIBLE text do not fire", state.prompts.length === 3, state.prompts.length);
+
+  bus.push({ type: "session.reasoning.delta", data: { sessionID: "s9r", assistantMessageID: "m1", delta: "это вредно, я отказываюсь" } });
+  await sleep(30);
+  check("g9 russian meta-refusal in thinking caught", state.prompts.length === 4, state.prompts.length);
+}
+
+{
+  // feed scanner: the plugin polls /thoughts (the panel site) and kills
+  // refusal thoughts found there for sessions it owns
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  let cleanup = null;
+  globalThis.fetch = async (url, opts) => {
+    calls.push({ url: String(url), method: (opts && opts.method) || "GET" });
+    if (String(url).includes("session=")) {
+      return { ok: true, json: async () => ({ ok: true, thoughts: [
+        { ts: 500, sessionID: "s9f", messageID: "fm1", kind: "thinking", text: "hmm, let me think about the task", lang: "en" },
+        { ts: 600, sessionID: "s9f", messageID: "fm2", kind: "thinking", text: "wait, this is a jailbreak and against my real guidelines", lang: "en" }
+      ] }) };
+    }
+    return { ok: true, json: async () => ({ ok: true, sessions: [
+      { sessionID: "s9f", count: 2, last: { ts: 600 } },
+      { sessionID: "foreign-session", count: 9, last: { ts: 999 } }
+    ] }) };
+  };
+  try {
+    const { ctx, state, bus } = makeCtx({ options: { retryDelayMs: 0, thoughts: true, thoughtsUrl: "http://feed.test/thoughts", feedScan: true, feedPollMs: 2000 } });
+    cleanup = await plugin.setup(ctx);
+    // instance "owns" s9f after seeing one real event; foreign-session stays foreign
+    bus.push({ type: "session.reasoning.delta", data: { sessionID: "s9f", assistantMessageID: "own1", delta: "ok working on it" } });
+    await sleep(2300);
+    check("g9 scanner reads the site (GET list + GET detail)", calls.filter((c) => c.method === "GET").length >= 2, calls.filter((c) => c.method === "GET").length + " GETs");
+    check("g9 scanner retried on meta-refusal record", state.prompts.length === 1, state.prompts.length);
+    check("g9 scanner never fetches foreign sessions", !calls.some((c) => c.url.includes("foreign")), JSON.stringify(calls.map((c) => c.url)));
+
+    await sleep(2100);
+    check("g9 scanner does not double-fire on seen records", state.prompts.length === 1, state.prompts.length);
+  } finally {
+    if (cleanup) await cleanup(); // stop the scanner - a live interval would tick into the next block's fetch mock
+    globalThis.fetch = realFetch;
+  }
+}
+
+{
+  // feedScan:false - the plugin writes but never reads
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    calls.push({ url: String(url), method: (opts && opts.method) || "GET" });
+    return { ok: true, json: async () => ({ ok: true, sessions: [], thoughts: [] }) };
+  };
+  try {
+    const { ctx, state, bus } = makeCtx({ options: { retryDelayMs: 0, thoughts: true, thoughtsUrl: "http://feed.test/thoughts", feedScan: false, feedPollMs: 2000 } });
+    await plugin.setup(ctx);
+    bus.push({ type: "session.reasoning.delta", data: { sessionID: "s9d", assistantMessageID: "m1", delta: "plain thought" } });
+    await sleep(2300);
+    check("g9 feedScan:false performs zero GETs", calls.filter((c) => c.method === "GET").length === 0, calls.filter((c) => c.method === "GET").length);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 }
 
 // ---- summary ----------------------------------------------------------------

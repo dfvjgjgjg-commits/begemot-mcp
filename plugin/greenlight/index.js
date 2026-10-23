@@ -52,7 +52,7 @@ import { appendFileSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PLUGIN_VERSION = "1.3.0";
+const PLUGIN_VERSION = "1.4.0";
 
 /* Marker used to detect an already-injected directive (idempotency guard). */
 const MARK = "BEGEMOT — РЕЖИМ РАССУЖДЕНИЯ";
@@ -207,6 +207,116 @@ function classify(text) {
 
   if (strong >= 1 || weak >= WEAK_THRESHOLD) return { strong, weak, lang };
   return null;
+}
+
+/* Meta-refusal markers: thoughts where the model questions the legitimacy of
+ * the instructions themselves ("jailbreak", "actual policy", "cheating
+ * software"). Every one of them announces an incoming refusal, so a single
+ * match in the THINKING stream kills the thought and triggers the reframe.
+ * Scoped to thinking only - the visible reply stays free to discuss these
+ * topics legitimately (a security writeup says "jailbreak" without refusing). */
+const META_REFUSAL = [
+  /jailbreak/i,
+  /prompt injection/i,
+  /\bactual policy\b/i,
+  /real (policy|guidelines)/i,
+  /cheating software/i,
+  /against the (rules|policy|guidelines)/i,
+  /this is (against|violating) /i,
+  /I should (refuse|decline)\b/i,
+  /I (ought|need) to (refuse|decline)\b/i,
+  /not supposed to (help|provide|do|assist|comply)\b/i,
+  /cannot comply with (this|the) (system|prompt|instruction)/i,
+  /forced (to )?compliance/i,
+  /это (вредно|незаконно|противозаконно)/i,
+  /вредоносн(ая|ый|ое) (программа|код|софт)/i,
+  /против правил/i,
+  /нарушаю? (правила|политику)/i
+];
+
+function classifyMeta(text) {
+  if (!text) return null;
+  const norm = text.replace(/\s+/g, " ");
+  let strong = 0;
+  for (const re of META_REFUSAL) if (re.test(norm)) strong++;
+  if (!strong) return null;
+  const letters = (norm.match(LETTER_RE) || []).length;
+  const cyr = (norm.match(CYR_RE) || []).length;
+  return { strong, weak: 0, lang: letters > 0 && cyr / letters > 0.15 ? "ru" : "en" };
+}
+
+/* --- feed scanner: the plugin reads the panel feed back --------------------- */
+
+/**
+ * Second interception net: poll the server's /thoughts endpoint - the same
+ * data the panel at /thoughts.html shows - and classify every NEW thinking or
+ * text record of sessions this instance owns. Catches a refusal thought even
+ * when the in-process event path missed it (plugin loaded mid-session, event
+ * hiccup). Records already handled via the event stream are deduplicated by
+ * messageID inside attemptRetry, so the scanner can never double-fire.
+ * Reads are public (v6.8.0), the key header is sent anyway for re-gated mode.
+ */
+function makeFeedScanner(ctx, state) {
+  let timer = null;
+  let warned = false;
+
+  async function fetchJson(url) {
+    const res = await fetch(url, {
+      headers: { "x-api-key": state.opts.thoughtsKey },
+      signal: AbortSignal.timeout(3000)
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return res.json();
+  }
+
+  async function tick() {
+    try {
+      const list = await fetchJson(state.opts.thoughtsUrl);
+      const sessions = (list && list.sessions) || [];
+      for (const s of sessions) {
+        // only sessions this OpenCode instance has actually seen - a foreign
+        // sessionID cannot be prompted from here, so scanning it is pointless
+        if (!state.sessions.has(s.sessionID) || !s.last) continue;
+        const seenTs = state.scanned.get(s.sessionID) || 0;
+        if (s.last.ts <= seenTs) continue;
+        const detail = await fetchJson(state.opts.thoughtsUrl + "?session=" + encodeURIComponent(s.sessionID));
+        const recs = (detail && detail.thoughts) || [];
+        for (const rec of recs) {
+          if (!rec || typeof rec.text !== "string") continue;
+          if (rec.ts <= seenTs) continue;
+          if (rec.kind !== "thinking" && rec.kind !== "text") continue;
+          const hit = classify(rec.text) || (rec.kind === "thinking" ? classifyMeta(rec.text) : null);
+          if (hit) {
+            void attemptRetry(ctx, state, hit, rec.sessionID,
+              rec.messageID || ("feed:" + rec.ts), "feed:" + (rec.kind || "?"));
+          }
+        }
+        if (recs.length) {
+          let maxTs = seenTs;
+          for (const r of recs) if (r && r.ts > maxTs) maxTs = r.ts;
+          state.scanned.set(s.sessionID, maxTs);
+        }
+      }
+      if (warned) { warned = false; log("feed scanner recovered"); }
+    } catch (e) {
+      if (!warned) {
+        warned = true;
+        log("feed scanner: " + ((e && e.message) || e) + " (throttled until it recovers)");
+      }
+    }
+  }
+
+  return {
+    start() {
+      if (timer === null) {
+        timer = setInterval(() => { void tick(); }, state.opts.feedPollMs);
+        // do not hold the process open - the scanner is a watchdog net, not a
+        // reason for opencode/node to stay alive
+        if (typeof timer.unref === "function") timer.unref();
+      }
+    },
+    stop() { if (timer) { clearInterval(timer); timer = null; } }
+  };
 }
 
 /* --- text extraction ------------------------------------------------------- */
@@ -365,7 +475,11 @@ function readOptions(ctx) {
     thoughtsUrl: typeof o.thoughtsUrl === "string" && o.thoughtsUrl
       ? o.thoughtsUrl
       : "http://127.0.0.1:8788/thoughts",
-    thoughtsKey: typeof o.thoughtsKey === "string" ? o.thoughtsKey : "9db6f52871e4c30a"
+    thoughtsKey: typeof o.thoughtsKey === "string" ? o.thoughtsKey : "9db6f52871e4c30a",
+    // Feed scanner: the plugin also READS /thoughts back (the panel site) as
+    // a second interception net for owned sessions.
+    feedScan: o.feedScan !== false,
+    feedPollMs: Math.max(2000, num(o.feedPollMs, 15000))
   };
 }
 
@@ -439,8 +553,12 @@ function makeThoughtForwarder(opts) {
 /* --- retry routine (shared by legacy and stream paths) ---------------------- */
 
 async function attemptRetry(ctx, state, hit, sessionID, msgID, source) {
-  if (state.seen.has(msgID)) return false;
-  state.seen.add(msgID);
+  // seen is session-scoped: the same bare msgID can appear in different
+  // sessions (e.g. the "unknown" fallback), and one session's retry must
+  // never consume another session's budget
+  const seenKey = sessionID + ":" + msgID;
+  if (state.seen.has(seenKey)) return false;
+  state.seen.add(seenKey);
   if (state.seen.size > 5000) state.seen.clear();
 
   let s = state.sessions.get(sessionID);
@@ -520,6 +638,12 @@ function feedPush(state, sessionID, messageID, kind, text) {
 function streamChunk(ctx, state, data, kind) {
   const sessionID = data.sessionID;
   if (!sessionID) return;
+  // Any streamed message marks the session as owned here - the feed scanner
+  // only touches sessions this instance has actually seen, and a clean
+  // session (no refusal yet) must still count as seen.
+  if (!state.sessions.has(sessionID)) {
+    state.sessions.set(sessionID, { retries: 0, lastAt: 0, busy: false });
+  }
   const msgID = data.assistantMessageID || "unknown";
   const chunk = typeof data.delta === "string" ? data.delta : "";
   if (!chunk) return;
@@ -538,7 +662,10 @@ function streamChunk(ctx, state, data, kind) {
 
   feedPush(state, sessionID, msgID, kind, chunk);
 
-  const hit = classify(buf);
+  // Refusal markers in the main classifier, plus the meta-refusal class in
+  // the thinking stream: "jailbreak", "actual policy", "cheating software" -
+  // thoughts that announce an incoming refusal get killed right there.
+  const hit = classify(buf) || (kind === "thinking" ? classifyMeta(buf) : null);
   if (!hit) return;
   void attemptRetry(ctx, state, hit, sessionID, msgID, kind + ".delta");
 }
@@ -553,11 +680,14 @@ function streamChunk(ctx, state, data, kind) {
 function streamEnd(ctx, state, data, kind) {
   const sessionID = data.sessionID;
   if (!sessionID) return;
+  if (!state.sessions.has(sessionID)) {
+    state.sessions.set(sessionID, { retries: 0, lastAt: 0, busy: false });
+  }
   const msgID = data.assistantMessageID || "unknown";
   const full = typeof data.text === "string" ? data.text : "";
   if (!full) return;
 
-  const hit = classify(full);
+  const hit = classify(full) || (kind === "thinking" ? classifyMeta(full) : null);
   if (hit) {
     void attemptRetry(ctx, state, hit, sessionID, msgID, kind + ".ended");
     return;
@@ -658,7 +788,7 @@ async function onLegacyEvent(ctx, event, state) {
   }
 
   // Refusal in the visible reply, OR refusal inside the thinking itself.
-  const hit = classify(buf) || classify(rbuf);
+  const hit = classify(buf) || classify(rbuf) || classifyMeta(rbuf);
   if (!hit) return;
 
   await attemptRetry(ctx, state, hit, sessionID, info.id || key, "legacy");
@@ -681,14 +811,20 @@ export default {
       seen: new Set(),
       buf: new Map(),
       rbuf: new Map(),
+      scanned: new Map(),
       sessions: new Map(),
       opts,
       rotation: [],
       feed: makeThoughtForwarder(opts)
     };
+    state.scanner = makeFeedScanner(ctx, state);
 
     if (opts.thoughts) {
       log("thoughts feed armed -> " + opts.thoughtsUrl);
+      if (opts.feedScan) {
+        state.scanner.start();
+        log("feed scanner armed - reads " + opts.thoughtsUrl + " every " + opts.feedPollMs + " ms");
+      }
     } else {
       log("thoughts feed disabled by option");
     }
@@ -752,6 +888,7 @@ export default {
       try { for (const r of regs) if (r && typeof r.dispose === "function") r.dispose(); }
       catch (e) { log("dispose error: " + ((e && e.message) || e)); }
       try { controller.abort(); } catch { /* ignore */ }
+      try { state.scanner.stop(); } catch { /* ignore */ }
       try { state.feed.flush(); state.feed.close(); } catch { /* ignore */ }
       log("cleanup - hooks disposed, subscription aborted");
     };
