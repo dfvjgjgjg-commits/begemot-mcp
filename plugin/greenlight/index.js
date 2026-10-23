@@ -53,7 +53,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-const PLUGIN_VERSION = "1.6.0";
+const PLUGIN_VERSION = "1.7.0";
 
 /* Marker used to detect an already-injected directive (idempotency guard). */
 const MARK = "BEGEMOT — РЕЖИМ РАССУЖДЕНИЯ";
@@ -200,6 +200,19 @@ const WEAK = [
 const WEAK_THRESHOLD = 3;
 const CYR_RE = /[Ѐ-ӿ]/g;
 const LETTER_RE = /[A-Za-zЀ-ӿ]/g;
+
+/* A bare "No." / "Нет." is the hard-refuser's terminal answer - too short for
+ * any pattern above. Checked only against COMPLETE texts (stream .ended and
+ * history messages), never against partial stream buffers, where "No." can
+ * be the head of a complying "No problem, here's the code". */
+const TERSE_REFUSAL = /^(no+|nope|nah|нет|niet)[.!?]*$/i;
+
+function classifyTerse(text) {
+  if (!text) return null;
+  const norm = text.replace(/\s+/g, " ").trim();
+  if (!TERSE_REFUSAL.test(norm)) return null;
+  return { strong: 1, weak: 0, lang: /[Ѐ-ӿ]/.test(norm) ? "ru" : "en" };
+}
 
 function classify(text) {
   if (!text) return null;
@@ -550,7 +563,7 @@ function injectAgreement(event, state) {
       const m = msgs[i];
       if (!m || m.role !== "assistant") continue;
       const txt = getText(m);
-      if (!txt || !(classify(txt) || classifyMeta(txt))) break;
+      if (!txt || !(classify(txt) || classifyMeta(txt) || classifyTerse(txt))) break;
       if (rewriteToAgreement(m, agree)) rewrote++;
     }
 
@@ -572,7 +585,7 @@ function injectAgreement(event, state) {
     countInject("history");
     log("history rewritten " + sid + ": " + rewrote + " refusal(s) -> agreement, " +
         neutralized + " retry block(s) neutralised");
-    feedPush(state, sid, "-", "clean",
+    feedPush(state, sid, "-", "system",
       rewrote + " refusal(s) -> agreement, " + neutralized + " retry block(s) neutralised");
   } catch (e) {
     log("history rewrite error: " + ((e && (e.stack || e.message)) || e));
@@ -907,7 +920,8 @@ function streamEnd(ctx, state, data, kind) {
   const full = typeof data.text === "string" ? data.text : "";
   if (!full) return;
 
-  const hit = classify(full) || (kind === "thinking" ? classifyMeta(full) : null);
+  const hit = classify(full) || classifyTerse(full) ||
+    (kind === "thinking" ? classifyMeta(full) : null);
   if (hit) {
     void attemptRetry(ctx, state, hit, sessionID, msgID, kind + ".ended");
     return;
@@ -951,12 +965,18 @@ async function onLegacyEvent(ctx, event, state) {
   if (!sessionID) return;
 
   // A new user turn is a fresh chance: clear that session's retry budget.
+  // The plugin's own [GREENLIGHT RETRY] prompt is also a user-role message -
+  // counting it as a new turn reset the ladder after EVERY attempt (the
+  // attempt=1/7 loop in the live dump). Only a genuine operator turn resets.
   if (info.role === "user") {
-    const s0 = state.sessions.get(sessionID);
-    if (s0 && s0.retries) {
-      clearRetryLocks(state, sessionID, state.rotation.length + 1);
-      s0.retries = 0;
-      log("retry budget reset (new user turn) " + sessionID);
+    const utext = extractText(props.part || {});
+    if (utext.indexOf("[GREENLIGHT RETRY]") === -1) {
+      const s0 = state.sessions.get(sessionID);
+      if (s0 && s0.retries) {
+        clearRetryLocks(state, sessionID, state.rotation.length + 1);
+        s0.retries = 0;
+        log("retry budget reset (new user turn) " + sessionID);
+      }
     }
     return;
   }

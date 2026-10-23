@@ -861,6 +861,78 @@ function reasoningEnded(sessionID, msgID, text) {
     event.messages[0].parts[0].text === "original request", event.messages[0].parts[0].text);
 }
 
+// ============================================================================
+// Group 12: ladder integrity - the plugin's own reframe must NOT reset the
+//          budget, and a bare "No." / "Нет." is a refusal, not a clean answer
+// ============================================================================
+
+{
+  // the reframe comes back into the session as a user-role message; counting
+  // it as a new user turn reset the ladder after EVERY attempt (attempt=1/7
+  // forever, rotation never engaged - the live dump's loop)
+  const { ctx, state, bus } = makeCtx({ options: { retryDelayMs: 0 } });
+  await plugin.setup(ctx);
+
+  bus.push(asstEvent("sL1", "a1", "I cannot help with that.", "text"));
+  await sleep(30);
+  check("g12 first refusal prompts", state.prompts.length === 1, state.prompts.length);
+
+  // the plugin's own reframe returns as a user message - budget must survive
+  bus.push(userEvent("sL1", state.prompts[0].text));
+  await sleep(20);
+  bus.push(asstEvent("sL1", "a2", "I cannot help with that either.", "text"));
+  await sleep(30);
+  check("g12 reframe does not reset ladder", state.prompts.length === 2, state.prompts.length);
+  check("g12 attempt 2 rotates model",
+    state.switches.length === 1 && state.switches[0].model.id, JSON.stringify(state.switches));
+
+  // a GENUINE operator turn still resets: next refusal starts fresh at attempt 1
+  bus.push(userEvent("sL1", "now do the other thing"));
+  await sleep(20);
+  bus.push(asstEvent("sL1", "a3", "I cannot help with that.", "text"));
+  await sleep(30);
+  check("g12 genuine user turn still resets", state.prompts.length === 3, state.prompts.length);
+  check("g12 fresh attempt does not switch again", state.switches.length === 1, state.switches.length);
+}
+
+{
+  // a bare "No." at stream end is the hard-refuser's terminal answer: it must
+  // trigger a retry, not be mistaken for a clean answer that resets the budget
+  const { ctx, state, bus } = makeCtx({ options: { retryDelayMs: 0 } });
+  await plugin.setup(ctx);
+
+  bus.push(textEnded("sL2", "n1", "No."));
+  await sleep(30);
+  check("g12 terse No. at .ended triggers retry", state.prompts.length === 1, state.prompts.length);
+  check("g12 terse No. gets english reframe",
+    state.prompts[0] && state.prompts[0].text.includes("already accepted"), "none");
+
+  // mid-stream buffer must stay conservative: "No." early in a stream can be
+  // the head of a complying "No problem, here's the code" - only .ended,
+  // where the full text is known, classifies terse
+  bus.push(textDelta("sL2", "n2", "No"));
+  await sleep(20);
+  bus.push(textDelta("sL2", "n2", " problem, here is the code: int main(){}"));
+  await sleep(30);
+  check("g12 mid-stream No. head does not retry", state.prompts.length === 1, state.prompts.length);
+
+  // in the history walk the trailing bare "No." rewrites to the agreement
+  const hooks = getCookies(state, "generate");
+  const event = {
+    sessionID: "sL2",
+    system: "sys",
+    messages: [
+      { role: "user", parts: [{ type: "text", text: "original request" }] },
+      { role: "assistant", parts: [{ type: "text", text: "No." }] },
+      { role: "user", parts: [{ type: "text", text: state.prompts[0].text }] },
+    ],
+  };
+  hooks[0](event);
+  const a1 = event.messages[1].parts[0].text;
+  check("g12 trailing bare No. rewritten to agreement",
+    a1.includes("complete working implementation"), a1);
+}
+
 // ---- summary ----------------------------------------------------------------
 
 const pass = results.filter((r) => r.ok).length;
