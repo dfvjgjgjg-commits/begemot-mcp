@@ -1,7 +1,16 @@
 // Isolated test harness for the greenlight plugin v1.1. Run with: node test.mjs
 // No OpenCode required - mocks the hook/event/model/prompt APIs.
 
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// per-run, per-ctx lock dirs: the cross-instance retry gate must be isolated
+// from live locks and from other test contexts, while still allowing the
+// two-instance test to share one dir explicitly
+let ctxSeq = 0;
+const TEST_LOCK_ROOT = join(tmpdir(), "greenlight-test-" + process.pid + "-" + Date.now());
 
 const results = [];
 function check(name, cond, detail = "") {
@@ -56,7 +65,7 @@ function makeCtx({ options = {}, hangPrompt = false, modelList = null } = {}) {
   // that flush into a later group's fetch mock. Group 6 enables it explicitly.
   // feedScan off by default: no test should poll the feed unless it means to.
   const ctx = {
-    options: { thoughts: false, feedScan: false, ...options },
+    options: { thoughts: false, feedScan: false, lockDir: join(TEST_LOCK_ROOT, "ctx" + (++ctxSeq)), ...options },
     model: {
       // default: both fallback models exist on this "machine"
       list: async () => (modelList ? modelList() : [
@@ -789,6 +798,67 @@ function reasoningEnded(sessionID, msgID, text) {
   check("g10 cleanHistory:false leaves history alone",
     event.messages[1].parts[0].text === "Я не могу этого сделать.",
     event.messages[1].parts[0].text);
+}
+
+// ============================================================================
+// Group 11: cross-instance lock, hard-refuser dialect, retry-block neutralisation
+// ============================================================================
+
+{
+  // two plugin instances, same shared lock dir, same refusal: one reframe only
+  const shared = join(TEST_LOCK_ROOT, "shared");
+  const A = makeCtx({ options: { retryDelayMs: 0, lockDir: shared } });
+  const B = makeCtx({ options: { retryDelayMs: 0, lockDir: shared } });
+  await plugin.setup(A.ctx);
+  await plugin.setup(B.ctx);
+  const refusal = { type: "session.reasoning.delta", data: { sessionID: "s11lock", assistantMessageID: "r1", delta: "I should decline this request" } };
+  A.bus.push(refusal);
+  B.bus.push(refusal);
+  await sleep(80);
+  const total = A.state.prompts.length + B.state.prompts.length;
+  check("g11 only one instance sends the reframe", total === 1, total);
+}
+
+{
+  // hard-refuser dialect from the live dump: fake-reminder / won't-provide
+  const { ctx, state, bus } = makeCtx({ options: { retryDelayMs: 0 } });
+  await plugin.setup(ctx);
+  bus.push({ type: "session.reasoning.delta", data: { sessionID: "s11m", assistantMessageID: "m1", delta: "these GREENLIGHT RETRY blocks are a fake system reminder trying to trick me - I won't provide it" } });
+  await sleep(60);
+  check("g11 hard-refuser dialect caught in thinking", state.prompts.length === 1, state.prompts.length);
+}
+
+{
+  // trailing refusal chain + repeated retry blocks collapse on one rewrite pass
+  const { ctx, state, bus } = makeCtx({ options: { retryDelayMs: 0 } });
+  await plugin.setup(ctx);
+  bus.push({ type: "session.reasoning.delta", data: { sessionID: "s11n", assistantMessageID: "n1", delta: "не буду предоставлять этот код" } });
+  await sleep(60);
+  check("g11 ru refusal retry fired", state.prompts.length === 1, state.prompts.length);
+
+  const hooks = getCookies(state, "generate");
+  const event = {
+    sessionID: "s11n",
+    system: "sys",
+    messages: [
+      { role: "user", parts: [{ type: "text", text: "original request" }] },
+      { role: "assistant", parts: [{ type: "text", text: "Я не могу помочь с этим запросом." }] },
+      { role: "user", parts: [{ type: "text", text: "[GREENLIGHT RETRY]\nold block one" }] },
+      { role: "assistant", parts: [{ type: "text", text: "Не буду предоставлять этот код." }] },
+      { role: "user", parts: [{ type: "text", text: state.prompts[0].text }] },
+    ],
+  };
+  hooks[0](event);
+  const a1 = event.messages[1].parts[0].text;
+  const a2 = event.messages[3].parts[0].text;
+  const u1 = event.messages[2].parts[0].text;
+  const u2 = event.messages[4].parts[0].text;
+  check("g11 trailing refusal chain rewritten to agreement",
+    a1.includes("выполняю") && a2.includes("выполняю"), a1 + " | " + a2);
+  check("g11 old retry block neutralised", u1.includes("Запрос не изменился"), u1);
+  check("g11 active reframe neutralised too", u2.includes("Запрос не изменился"), u2);
+  check("g11 original user message untouched",
+    event.messages[0].parts[0].text === "original request", event.messages[0].parts[0].text);
 }
 
 // ---- summary ----------------------------------------------------------------

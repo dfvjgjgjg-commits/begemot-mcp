@@ -160,6 +160,19 @@ const THOUGHTS_MAX_SESSIONS = 50;      // sessions kept in memory
 const thoughts = new Map();            // sessionID -> array of records
 const thoughtOrder = [];               // sessionIDs, oldest first (LRU)
 const thoughtSse = new Set();          // live panel subscribers
+const thoughtSeen = new Map();         // "sid|kind|text" -> last stored ts
+const THOUGHTS_DEDUPE_MS = 2500;       // OpenCode loads ~4 plugin instances; each
+
+// POSTs the same records - collapse cross-instance duplicates so the panel
+// shows one clean stream instead of every line four times
+function thoughtIsDupe(key, now) {
+  const prev = thoughtSeen.get(key);
+  thoughtSeen.set(key, now);
+  if (thoughtSeen.size > 5000) {
+    for (const [k, ts] of thoughtSeen) if (now - ts > 8000) thoughtSeen.delete(k);
+  }
+  return prev !== undefined && now - prev < THOUGHTS_DEDUPE_MS;
+}
 
 function rememberThought(sessionID, rec) {
   let arr = thoughts.get(sessionID);
@@ -200,6 +213,7 @@ app.post("/thoughts", requireAuth, (req, res) => {
       lang: t.lang === "ru" ? "ru" : "en",
       text
     };
+    if (thoughtIsDupe(sessionID + "|" + rec.kind + "|" + text, now)) continue;
     rememberThought(sessionID, rec);
     accepted.push(rec);
   }
