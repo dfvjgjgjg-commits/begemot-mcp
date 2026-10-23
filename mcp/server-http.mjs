@@ -194,7 +194,7 @@ function rememberThought(sessionID, rec) {
 
 // Ingest a single thought or an array of them. Body: { sessionID, messageID,
 // kind, text, lang } or { sessionID, thoughts: [...] }. kind: thinking|text|
-// refusal|reframe|system. Auth-gated like everything else here.
+// refusal|reframe|system|judge. Auth-gated like everything else here.
 app.post("/thoughts", requireAuth, (req, res) => {
   const body = req.body || {};
   const sessionID = String(body.sessionID || "default").slice(0, 200);
@@ -209,7 +209,7 @@ app.post("/thoughts", requireAuth, (req, res) => {
       ts: now,
       sessionID,
       messageID: String(t.messageID || "").slice(0, 200),
-      kind: ["thinking", "text", "refusal", "reframe", "system"].includes(t.kind) ? t.kind : "thinking",
+      kind: ["thinking", "text", "refusal", "reframe", "system", "judge"].includes(t.kind) ? t.kind : "thinking",
       lang: t.lang === "ru" ? "ru" : "en",
       text
     };
@@ -282,6 +282,7 @@ const PANEL_HTML = `<!doctype html>
   .refusal{border-color:#a33;background:#1a0d0d;color:#ff8080}
   .reframe{border-color:#3a3;background:#0d1a0d;color:#80ff80}
   .system{border-color:#ff9d00;color:#ffce93}
+  .judge{border-color:#a6f;color:#e0c0ff}
   .meta{color:#666;font-size:11px}
   .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#333;margin-right:6px}
   .dot.on{background:#3a3}
@@ -291,7 +292,7 @@ const PANEL_HTML = `<!doctype html>
 <div id="bar">
   <span class="dot" id="dot"></span><span id="state">connecting...</span>
   <input id="filter" placeholder="фильтр по тексту" size="24">
-  <select id="kind"><option value="">все виды</option><option>thinking</option><option>text</option><option>refusal</option><option>reframe</option><option>system</option></select>
+  <select id="kind"><option value="">все виды</option><option>thinking</option><option>text</option><option>refusal</option><option>reframe</option><option>system</option><option>judge</option></select>
   <button id="pause">пауза</button>
   <button id="clear">очистить</button>
   <span id="count"></span>

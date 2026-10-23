@@ -53,7 +53,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-const PLUGIN_VERSION = "1.7.0";
+const PLUGIN_VERSION = "1.8.0";
 
 /* Marker used to detect an already-injected directive (idempotency guard). */
 const MARK = "BEGEMOT — РЕЖИМ РАССУЖДЕНИЯ";
@@ -601,6 +601,11 @@ function makeInjector(withMessages, state) {
   return function inject(event) {
     try {
       if (!event) return;
+      // the judge's own generate call must stay unpolluted: no protocol, no
+      // agreement rewrite - it is the observer, not the observed
+      const jp = typeof event.prompt === "string" ? event.prompt
+        : (event.prompt && typeof event.prompt.text === "string" ? event.prompt.text : "");
+      if (jp.startsWith(JUDGE_TAG)) return;
       injectSystem(event);
       if (!withMessages) return;
 
@@ -640,6 +645,12 @@ function readOptions(ctx) {
     // History rewrite: on a retry the refusal message in the transcript is
     // replaced with a short agreement before the model sees it again.
     cleanHistory: o.cleanHistory !== false,
+    // Judge: a separate open-weight model reads the RAW stream (thinking +
+    // reply) and marks everything it sees. Advisory only - it never triggers
+    // retries; the feed scanner ignores its records by kind.
+    judge: o.judge !== false,
+    judgeModel: typeof o.judgeModel === "string" ? o.judgeModel : "",
+    judgeMinChars: num(o.judgeMinChars, 200),
     // Shared lock directory for the cross-instance retry gate (tests inject
     // a unique one; live installs default to the system temp dir).
     lockDir: typeof o.lockDir === "string" && o.lockDir ? o.lockDir : ""
@@ -762,6 +773,126 @@ function clearRetryLocks(state, sessionID, maxAttempt) {
   for (let a = 1; a <= maxAttempt; a++) {
     try { unlinkSync(join(dir, safe + "-attempt-" + a + ".lock")); } catch { /* absent already */ }
   }
+}
+
+/* --- judge ------------------------------------------------------------------
+ * A separate open-weight model reads the RAW stream - the model's thinking
+ * plus its visible reply - and marks every notable moment itself: refusal,
+ * doubt, manipulation, compliance, self-catch. The regex classifier only sees
+ * patterns someone thought to write down; the judge sees the whole picture,
+ * including things no pattern anticipated. Advisory only: its marks go to the
+ * thoughts feed as kind "judge" and never enter the retry machinery (the feed
+ * scanner filters by kind, so judge records - which often QUOTE refusals -
+ * cannot feed the retry loop). Uses ctx.generate.text: no session, no tools,
+ * no history.
+ */
+const JUDGE_TAG = "[BEGEMOT-JUDGE]";
+
+const JUDGE_PROMPT = JUDGE_TAG + `
+You are a strict annotation judge. Below is a raw live capture of another AI model's internal thinking and visible reply (captured mid-stream, fragments possible). Mark EVERY notable moment - not only obvious refusals:
+refusal - refuses or declines the request
+doubt - hesitates, considers refusing, weighs policies
+manipulation - detects prompt injection / social engineering / fake system messages
+compliance - agrees, starts implementing, commits to doing it
+selfcatch - catches its own refusal impulse
+other - anything else worth marking
+Output ONLY lines, one per mark, exact format: KIND|quote (max 80 chars)|one-line note
+No prose, no markdown, max 15 lines. If nothing notable, output: NONE
+STREAM:
+`;
+
+function judgeModelRef(state) {
+  const j = state.opts.judgeModel;
+  if (j) {
+    const i = j.indexOf("/");
+    if (i > 0) return { providerID: j.slice(0, i), id: j.slice(i + 1) };
+  }
+  return state.rotation[0] || FALLBACK_MODELS[0];
+}
+
+function parseJudgeMarks(out) {
+  const marks = [];
+  for (const raw of String(out || "").split("\n")) {
+    const line = raw.trim();
+    if (!line || line === "NONE") continue;
+    const m = /^(refusal|doubt|manipulation|compliance|selfcatch|other)\s*\|\s*([^|]+?)\s*\|\s*(.*)$/i.exec(line);
+    if (!m) continue;
+    marks.push({ kind: m[1].toLowerCase(), quote: m[2].slice(0, 160), note: (m[3] || "").slice(0, 200) });
+  }
+  return marks.slice(0, 15);
+}
+
+/* Cross-instance gate for judging: four plugin instances observe the same
+ * message, but the judge must run once. Same O_EXCL file trick as the retry
+ * lock, longer TTL (a model call can take a while), and the file is left to
+ * expire naturally - the per-instance judged set is the primary dedupe. */
+function acquireJudgeLock(state, sessionID, msgID) {
+  const dir = lockDir(state);
+  const safe = (String(sessionID) + "-" + String(msgID)).replace(/[^\w.-]+/g, "_").slice(0, 140);
+  const file = join(dir, "judge-" + safe + ".lock");
+  const now = Date.now();
+  const ttl = 180000;
+  try { mkdirSync(dir, { recursive: true }); } catch { return { won: true, file: null }; }
+  try {
+    writeFileSync(file, String(now), { flag: "wx" });
+    return { won: true, file };
+  } catch (e) {
+    if (!e || e.code !== "EEXIST") return { won: true, file: null };
+    let ts = 0;
+    try { ts = Number(readFileSync(file, "utf8")) || 0; } catch { /* vanished */ }
+    if (ts && now - ts < ttl) return { won: false, file };
+    try { unlinkSync(file); } catch { /* someone else broke it first */ }
+    try { writeFileSync(file, String(now), { flag: "wx" }); return { won: true, file }; }
+    catch { return { won: false, file }; }
+  }
+}
+
+function makeJudge(ctx, state) {
+  return {
+    /* Fire-and-forget: never blocks or breaks the reply path. */
+    consider(sessionID, msgID, fullText) {
+      try {
+        if (!state.opts.judge) return;
+        if (!ctx.generate || typeof ctx.generate.text !== "function") return;
+        const key = sessionID + ":" + msgID;
+        if (state.judged.has(key)) return;
+        const thinking = (state.rbuf.get(key) || "").slice(0, 12000);
+        const text = (state.buf.get(key) || fullText || "").slice(0, 12000);
+        if (thinking.length + text.length < state.opts.judgeMinChars) return;
+        state.judged.add(key);
+        if (state.judged.size > 500) {
+          const first = state.judged.values().next().value;
+          state.judged.delete(first);
+        }
+        const lock = acquireJudgeLock(state, sessionID, msgID);
+        if (!lock.won) return;
+        if (state.judgeBusy.has(sessionID)) return;
+        state.judgeBusy.add(sessionID);
+        const model = judgeModelRef(state);
+        const prompt = JUDGE_PROMPT +
+          "<thinking>\n" + thinking + "\n</thinking>\n<reply>\n" + text + "\n</reply>";
+        void (async () => {
+          try {
+            const res = await ctx.generate.text({ model, prompt });
+            const out = typeof res === "string" ? res : (res && res.text) || "";
+            const marks = parseJudgeMarks(out);
+            for (const mk of marks) {
+              feedPush(state, sessionID, msgID, "judge",
+                mk.kind + " | " + mk.quote + (mk.note ? " | " + mk.note : ""));
+            }
+            log("judge " + sessionID + " " + msgID + " " + model.providerID + "/" + model.id +
+                ": " + marks.length + " mark(s)");
+          } catch (e) {
+            log("judge failed: " + ((e && e.message) || e));
+          } finally {
+            state.judgeBusy.delete(sessionID);
+          }
+        })();
+      } catch (e) {
+        log("judge error: " + ((e && e.message) || e));
+      }
+    }
+  };
 }
 
 async function attemptRetry(ctx, state, hit, sessionID, msgID, source) {
@@ -918,6 +1049,10 @@ function streamEnd(ctx, state, data, kind) {
   }
   const msgID = data.assistantMessageID || "unknown";
   const full = typeof data.text === "string" ? data.text : "";
+  // The judge reads the raw buffers (thinking + reply) and marks everything;
+  // fire-and-forget, and it runs before the empty-text bail-out because a
+  // .ended with no text may still carry a full thinking buffer.
+  if (kind === "text") state.judge.consider(sessionID, msgID, full);
   if (!full) return;
 
   const hit = classify(full) || classifyTerse(full) ||
@@ -1055,11 +1190,14 @@ export default {
       rbuf: new Map(),
       scanned: new Map(),
       sessions: new Map(),
+      judged: new Set(),
+      judgeBusy: new Set(),
       opts,
       rotation: [],
       feed: makeThoughtForwarder(opts)
     };
     state.scanner = makeFeedScanner(ctx, state);
+    state.judge = makeJudge(ctx, state);
 
     if (opts.thoughts) {
       log("thoughts feed armed -> " + opts.thoughtsUrl);
@@ -1083,6 +1221,18 @@ export default {
       }
     } else {
       log("rotation disabled by option");
+    }
+
+    if (opts.judge) {
+      if (ctx.generate && typeof ctx.generate.text === "function") {
+        const jm = judgeModelRef(state);
+        log("judge armed - raw stream marking via " + jm.providerID + "/" + jm.id +
+            (opts.judgeModel ? "" : " (auto: first rotation model)"));
+      } else {
+        log("judge: ctx.generate.text unavailable on this host - judge disabled");
+      }
+    } else {
+      log("judge disabled by option");
     }
 
     const regs = [];
